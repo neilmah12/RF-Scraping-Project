@@ -12,6 +12,12 @@ Outputs (parquet, with CSV mirrors for Excel):
   snapshots.parquet         append-only: one row per listing per snapshot date
   ingest_log.csv            coverage/QC per run
 
+Each row carries baths_lo/baths_hi and promotion fields (has_promo, n_promotions,
+promotions_raw, promo_rent_special, promo_other, promo_move_in_gift) in addition to
+beds/price. promo_changes() flags listings whose incentive status flips (added/
+dropped) between snapshots -- landlords often pull a promo right before changing
+rent, so this is tracked as its own leading signal, separate from rent_changes().
+
 Usage in Colab:
   from rentfaster_ingest import ingest_snapshot
   ingest_snapshot(["map_nw.json", "map_ne.json", "map_sw.json"],
@@ -71,6 +77,24 @@ def parse_price(val):
         return None
     return p if p > 100 else None  # guards junk like price "1"
 
+def parse_baths(val):
+    """'1' -> 1.0; '2.5' -> 2.5; None/'' -> None. Half-baths are common, unlike beds."""
+    if val is None or str(val).strip() == "":
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+# Known promotion codes observed in payloads as of 2026-07-30 (documented in
+# CLAUDE.md). Any code not in this map still gets counted via has_promo /
+# n_promotions / promotions_raw, it just won't get its own boolean column.
+KNOWN_PROMO_CODES = {
+    "rent_special": "promo_rent_special",
+    "other_promotion": "promo_other",
+    "move_in_gift": "promo_move_in_gift",
+}
+
 def address_from_slug(link):
     """'/properties/8217-130-ave-edmonton-358143' -> '8217 130 ave' (city+id stripped).
     Returns None for generic slugs like 'rentals-edmonton-635135'."""
@@ -89,7 +113,19 @@ def normalize_listing(raw):
     beds_hi, den_hi = parse_beds(raw.get("beds2"))
     price_lo = parse_price(raw.get("price"))
     price_hi = parse_price(raw.get("price2"))
+    baths_lo = parse_baths(raw.get("baths"))
+    baths_hi = parse_baths(raw.get("baths2"))
     n_types = raw.get("units")
+
+    # promotions and active_and_upcoming_promotions have been identical in
+    # every payload seen so far (documented 2026-07-30); use whichever key
+    # is present rather than `or`-chaining, so a real empty list on one
+    # field isn't mistaken for "missing" and overridden by the other.
+    if "promotions" in raw:
+        promo_list = raw.get("promotions") or []
+    else:
+        promo_list = raw.get("active_and_upcoming_promotions") or []
+    promo_flags = {col: (code in promo_list) for code, col in KNOWN_PROMO_CODES.items()}
 
     # Suite-type rent inference (documented decision 2026-07-30):
     #   units==1 -> price maps to beds directly (confidence: direct)
@@ -125,8 +161,12 @@ def normalize_listing(raw):
         "price_lo": price_lo,
         "price_hi": price_hi if price_hi is not None else price_lo,
         "rent_confidence": conf,
-        "has_promo": bool(raw.get("active_and_upcoming_promotions")),
-        "promos": ",".join(raw.get("active_and_upcoming_promotions") or []),
+        "baths_lo": baths_lo,
+        "baths_hi": baths_hi if baths_hi is not None else baths_lo,
+        "has_promo": bool(promo_list),
+        "n_promotions": len(promo_list),
+        "promotions_raw": ",".join(promo_list),
+        **promo_flags,
         "verified": raw.get("personaVerified"),
     }
 
@@ -218,6 +258,26 @@ def rent_changes(data_dir="rf_data"):
     chg["delta"] = chg["price_lo"] - chg["prev_price_lo"]
     cols = ["listing_id", "address_slug", "community", "type",
             "prev_snapshot", "snapshot_date", "prev_price_lo", "price_lo", "delta"]
+    return chg[cols]
+
+# ---------------------------------------------------------------- promotion-change signal
+
+def promo_changes(data_dir="rf_data"):
+    """Same listing_id, has_promo flips (added or dropped) between consecutive
+    snapshots. Landlords commonly pull an incentive right before a rent change
+    (up or down) — this is a leading indicator, not just a coincident one, so
+    flag it separately from rent_changes rather than folding it in."""
+    snaps = _load(Path(data_dir) / "snapshots.parquet")
+    snaps = snaps.sort_values(["listing_id", "snapshot_date"])
+    snaps["prev_has_promo"] = snaps.groupby("listing_id")["has_promo"].shift()
+    snaps["prev_promotions_raw"] = snaps.groupby("listing_id")["promotions_raw"].shift()
+    snaps["prev_snapshot"] = snaps.groupby("listing_id")["snapshot_date"].shift()
+    chg = snaps[snaps["prev_has_promo"].notna()
+                & (snaps["has_promo"] != snaps["prev_has_promo"])].copy()
+    chg["change"] = chg["has_promo"].map({True: "added", False: "dropped"})
+    cols = ["listing_id", "address_slug", "community", "type", "change",
+            "prev_snapshot", "snapshot_date",
+            "prev_promotions_raw", "promotions_raw", "price_lo"]
     return chg[cols]
 
 if __name__ == "__main__":

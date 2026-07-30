@@ -71,9 +71,25 @@ address, sometimes empty), `link` (slug contains civic address), `date`
 "studio", "1+den" etc.), `price`/`price2` (range, strings, junk values like "1"
 occur), `promotions`, `personaVerified`, `f` + `mapRole`.
 
+Also present per listing: `baths`/`baths2` (range, decimals for half-baths e.g.
+"1.5", "2.5" — not currently in the Inventory workbook but kept in the export
+since it's free and useful for QA/filtering even if dropped downstream), and
+`promotions` (list of incentive codes; `active_and_upcoming_promotions` is a
+duplicate field, confirmed identical to `promotions` in every payload sampled
+so far — use `promotions` as primary, do not `or`-chain the two since a real
+empty list on one must not fall back to the other).
+
+Known promotion codes (sampled 2026-07-30, one payload, 500 listings, 213 had
+a promo): `rent_special` (128), `other_promotion` (93), `move_in_gift` (5).
+Any future/unseen code still gets counted (has_promo, n_promotions,
+promotions_raw) even without its own named column.
+
 Known quirks:
 - **`f` is a display/promotion tier, NOT furnished** (tentative interpretation;
-  same listing appears under multiple f values → dedupe on `id` mandatory)
+  same listing appears under multiple f values → dedupe on `id` mandatory).
+  Confirmed 2026-07-30: `mapRole` (silver/highlighted) only ever appears when
+  `f==2`; `f==0`/`f==1` always have `mapRole=None`. Consistent with `f` being
+  a paid display tier, not a furnished flag.
 - **~800 listing cap per response** (`search.max`); `total` field gives true count
   (e.g. 2,496). Multiple zoomed-in quadrant captures per month are required.
   Ingest script reports coverage and warns <90%.
@@ -86,6 +102,13 @@ map.json gives ranges, not per-suite-type rents. Inference:
 - `units == 1` → price maps to beds directly → confidence `direct`
 - `units == 2` → price→beds, price2→beds2 → confidence `inferred`
 - `units >= 3` → range only, no per-type mapping → confidence `range_only`
+
+Note (confirmed 2026-07-30): for `units >= 3`, `beds`/`beds2` still gives the
+true suite-mix range (e.g. building has both 1-beds and 2-beds on offer), so
+suite mix is known even when the per-type rent isn't. What's unrecoverable
+from map.json alone is which specific price in the range applies to which
+specific bed count when there are 3+ distinct suite types — that needs the
+detail-page JSON (not yet captured/documented).
 
 For buildings being actively underwritten, pull the listing detail-page JSON
 (full floorplan breakdown) on demand — hybrid approach. Detail schema not yet
@@ -134,6 +157,24 @@ documented; capture an example when first needed.
 - Mortgage maturity = registration + 5yr ESTIMATE, flagged as such.
 - All inferred rents carry confidence flags through to the proforma.
 
+### Promotion/incentive tracking (added 2026-07-30)
+
+Neil's domain input: landlords commonly pull an incentive right before
+changing rent (either direction) — incentive presence/removal is a leading
+signal, not just coincident with a rent change, so it's tracked as its own
+function (`promo_changes`) rather than folded into `rent_changes`.
+
+- Every listing row carries `has_promo`, `n_promotions`, `promotions_raw`
+  (comma-joined raw codes), plus named booleans for known codes
+  (`promo_rent_special`, `promo_other`, `promo_move_in_gift`).
+- `promo_changes(data_dir)`: same listing_id, `has_promo` flips between
+  consecutive snapshots → flagged `added` or `dropped`.
+- Bath range (`baths_lo`/`baths_hi`) is captured in the export even though the
+  Inventory workbook has no baths field to join against — kept for QA/filtering
+  now, can be dropped or matched later. General principle: capture as much
+  per-listing field as map.json gives for free; downstream steps pick and
+  choose what to keep.
+
 ## 6. Data store layout
 
 ```
@@ -171,6 +212,9 @@ rf_data/
 | 2026-07-30 | Refi screen = join from Sales sheet (already built there) |
 | 2026-07-30 | Hybrid rent depth: map.json market-wide, detail JSON on demand for underwriting |
 | 2026-07-30 | Repo bootstrapped: `src/rentfaster_ingest.py` + `notebooks/rentfaster_ingest.ipynb` for Colab |
+| 2026-07-30 | Added baths_lo/baths_hi, promotion fields + codes, `promo_changes()` signal (incentive add/drop is a leading indicator, tracked separately from rent_changes) |
+| 2026-07-30 | Confirmed via sample payload: `promotions`/`active_and_upcoming_promotions` always identical; `f==2` is the only tier with a `mapRole`, supporting `f` = display tier |
+| 2026-07-30 | Confirmed: units>=3 still gives true suite-mix range via beds/beds2, just not per-type rent mapping (unresolvable without detail-page JSON) |
 
 ## 9. Open questions
 
