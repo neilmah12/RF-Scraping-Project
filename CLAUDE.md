@@ -175,6 +175,24 @@ function (`promo_changes`) rather than folded into `rent_changes`.
   per-listing field as map.json gives for free; downstream steps pick and
   choose what to keep.
 
+### Poster identity / portfolio signal (added 2026-08-04)
+
+`userId` is highly concentrated in every payload sampled so far (e.g. 99 distinct
+posters across 500 listings, top poster with 70 listings) — these are property
+management companies, not individual landlords, and that's leverage for both
+matching (Step 3) and landlord-behavior signals (Step 5+).
+
+- `user_listings_in_snapshot`: count of listings the same `user_id` has live in
+  the current snapshot, computed per-snapshot so it's directly filterable/sortable
+  in Excel without building a pivot table.
+- Not yet built: cross-snapshot portfolio tracking, or using shared `user_id` to
+  raise match confidence on ambiguous listings near a building the same poster
+  is already confidently matched to. Deferred to Step 3.
+- `city_totals.csv` also added: the payload's top-level `cities` field gives
+  metro-wide listing counts per city, independent of this run's quadrant capture
+  coverage — a second, cheap coverage cross-check plus a free city-level supply
+  trend once multiple months accumulate.
+
 ## 6. Data store layout
 
 ```
@@ -182,6 +200,9 @@ rf_data/
   snapshots.parquet(.csv)       append-only, one row per listing per snapshot
   listings_master.parquet(.csv) current state + first_seen/last_seen/active
   ingest_log.csv                per-run coverage QC
+  city_totals.csv               metro-wide listing counts per city per snapshot
+                                 (from payload's top-level 'cities' field, independent
+                                 of quadrant capture coverage)
   # future:
   inventory_geocoded.parquet    step 2 output
   match_table.parquet           step 3: rentfaster_id <-> building_id, permanent
@@ -215,6 +236,8 @@ rf_data/
 | 2026-07-30 | Added baths_lo/baths_hi, promotion fields + codes, `promo_changes()` signal (incentive add/drop is a leading indicator, tracked separately from rent_changes) |
 | 2026-07-30 | Confirmed via sample payload: `promotions`/`active_and_upcoming_promotions` always identical; `f==2` is the only tier with a `mapRole`, supporting `f` = display tier |
 | 2026-07-30 | Confirmed: units>=3 still gives true suite-mix range via beds/beds2, just not per-type rent mapping (unresolvable without detail-page JSON) |
+| 2026-08-04 | Added user_listings_in_snapshot (portfolio-size signal from userId concentration) and city_totals.csv (metro-wide per-city counts from payload's 'cities' field) |
+| 2026-08-04 | Decided: comparison/trend visualization stays a separate future tool, not baked into rentfaster_ingest.py -- ingest stays extraction/export only |
 
 ## 9. Open questions
 

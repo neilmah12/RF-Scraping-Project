@@ -11,12 +11,20 @@ Outputs (parquet, with CSV mirrors for Excel):
   listings_master.parquet   one row per listing_id (current state + first/last seen)
   snapshots.parquet         append-only: one row per listing per snapshot date
   ingest_log.csv            coverage/QC per run
+  city_totals.csv           metro-wide listing counts per city per snapshot,
+                             from the payload's top-level 'cities' field --
+                             independent of this run's quadrant capture coverage
 
 Each row carries baths_lo/baths_hi and promotion fields (has_promo, n_promotions,
 promotions_raw, promo_rent_special, promo_other, promo_move_in_gift) in addition to
 beds/price. promo_changes() flags listings whose incentive status flips (added/
 dropped) between snapshots -- landlords often pull a promo right before changing
 rent, so this is tracked as its own leading signal, separate from rent_changes().
+
+user_id is the poster's account ID; user_listings_in_snapshot is the count of
+listings that same user_id has live in the current snapshot -- a cheap portfolio-
+size signal (a handful of accounts typically account for a large share of
+listings -- property management companies, not individual landlords).
 
 Usage in Colab:
   from rentfaster_ingest import ingest_snapshot
@@ -177,7 +185,8 @@ def load_payload(path):
         data = json.load(f)
     listings = data.get("listings", data if isinstance(data, list) else [])
     total = data.get("total")
-    return listings, total
+    cities = data.get("cities") or []  # metro-wide totals, independent of capture coverage
+    return listings, total, cities
 
 def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
                     metro_city_ids=(2, 43, 33, 34, 39, 31, 36)):
@@ -185,11 +194,14 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     snapshot_date = snapshot_date or date.today().isoformat()
     data_dir = Path(data_dir); data_dir.mkdir(parents=True, exist_ok=True)
 
-    rows, totals = [], []
+    rows, totals, cities_seen = [], [], {}
     for p in payload_files:
-        listings, total = load_payload(p)
+        listings, total, cities = load_payload(p)
         totals.append(total)
         rows.extend(normalize_listing(x) for x in listings)
+        for c in cities:  # metro-wide, same across quadrant files; last one wins
+            if c.get("city"):
+                cities_seen[c["city"]] = c.get("listings")
 
     df = pd.DataFrame(rows)
     n_raw = len(df)
@@ -197,6 +209,11 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     df = df[df["listing_id"].notna()]
     df["snapshot_date"] = snapshot_date
     n_unique = len(df)
+
+    # Portfolio footprint: how many units this poster has live in this
+    # snapshot. Cheap, already-present field (user_id) made filterable/
+    # sortable directly rather than requiring a pivot table in Excel.
+    df["user_listings_in_snapshot"] = df.groupby("user_id")["listing_id"].transform("count")
 
     claimed_total = max([t for t in totals if t], default=None)
     coverage = round(n_unique / claimed_total, 3) if claimed_total else None
@@ -241,6 +258,19 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     if log_path.exists():
         log_row = pd.concat([pd.read_csv(log_path), log_row], ignore_index=True)
     log_row.to_csv(log_path, index=False)
+
+    # ---- city-wide totals (independent of this run's quadrant capture coverage)
+    if cities_seen:
+        city_rows = pd.DataFrame([
+            {"snapshot_date": snapshot_date, "city": city, "site_reported_listings": n}
+            for city, n in cities_seen.items()
+        ])
+        city_path = data_dir / "city_totals.csv"
+        if city_path.exists():
+            existing_city = pd.read_csv(city_path)
+            existing_city = existing_city[existing_city["snapshot_date"] != snapshot_date]
+            city_rows = pd.concat([existing_city, city_rows], ignore_index=True)
+        city_rows.to_csv(city_path, index=False)
 
     return master
 
