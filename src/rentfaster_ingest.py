@@ -26,6 +26,10 @@ listings that same user_id has live in the current snapshot -- a cheap portfolio
 size signal (a handful of accounts typically account for a large share of
 listings -- property management companies, not individual landlords).
 
+rent_confidence has four tiers (refined 2026-08-04, driven by beds_lo==beds_hi,
+not raw units count): direct > certain > inferred > blended. See normalize_listing()
+for the full rule and its documented caveat.
+
 Usage in Colab:
   from rentfaster_ingest import ingest_snapshot
   ingest_snapshot(["map_nw.json", "map_ne.json", "map_sw.json"],
@@ -135,16 +139,34 @@ def normalize_listing(raw):
         promo_list = raw.get("active_and_upcoming_promotions") or []
     promo_flags = {col: (code in promo_list) for code, col in KNOWN_PROMO_CODES.items()}
 
-    # Suite-type rent inference (documented decision 2026-07-30):
-    #   units==1 -> price maps to beds directly (confidence: direct)
-    #   units==2 -> price->beds, price2->beds2 (confidence: inferred)
-    #   units>=3 -> range only, no per-type mapping (confidence: range_only)
+    beds_hi_resolved = beds_hi if beds_hi is not None else beds_lo
+
+    # Suite-type rent inference (refined 2026-08-04, supersedes the
+    # units-only rule from 2026-07-30): confidence is driven by whether
+    # beds_lo == beds_hi, not raw units count. units>=3 with a single bed
+    # count (e.g. three differently-sized 2BR floorplans) is NOT ambiguous
+    # -- the price range genuinely belongs to that one bed count. Blending
+    # is only correct when the bed count itself spans a real range.
+    #   units==1                              -> direct   (single suite type, no ambiguity at all)
+    #   beds_lo == beds_hi (any units)        -> certain  (one bed count, price range = that bed count's range)
+    #   beds_lo != beds_hi and units<=2       -> inferred (clean two-type split: price->beds, price2->beds2)
+    #   beds_lo != beds_hi and units>=3        -> blended  (can't resolve which price maps to which bed count)
+    #
+    # Caveat (found 2026-08-04 checking a real payload): beds_hi is None in
+    # some units>=2 listings that DO have a price2 -- i.e. a real price
+    # spread with no reported second bed count. Sampled cases were all
+    # consistent with "same bed count, different floorplan sizes" (supports
+    # treating it as certain, not blended), but map.json alone can't fully
+    # rule out a genuinely differing bed count that the site just didn't
+    # report -- unconfirmed until cross-checked against detail-page JSON.
     if n_types == 1:
         conf = "direct"
+    elif beds_lo is not None and beds_lo == beds_hi_resolved:
+        conf = "certain"
     elif n_types == 2 and beds_hi is not None:
         conf = "inferred"
     else:
-        conf = "range_only"
+        conf = "blended"
 
     return {
         "listing_id": raw.get("id"),

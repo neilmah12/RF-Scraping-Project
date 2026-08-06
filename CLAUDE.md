@@ -96,12 +96,35 @@ Known quirks:
 - Some listings have empty `intro` and generic slug (`rentals-edmonton-NNNNN`):
   no address available, lat/long-only matching with lower confidence.
 
-### Suite-type rent inference rule (core decision)
+### Suite-type rent inference rule (refined 2026-08-04, supersedes 2026-07-30 version)
 
-map.json gives ranges, not per-suite-type rents. Inference:
-- `units == 1` → price maps to beds directly → confidence `direct`
-- `units == 2` → price→beds, price2→beds2 → confidence `inferred`
-- `units >= 3` → range only, no per-type mapping → confidence `range_only`
+map.json gives ranges, not per-suite-type rents. Original rule was units-based;
+refined to be driven by whether `beds_lo == beds_hi`, because a high `units`
+count with a single bed count (e.g. three differently-sized 2BR floorplans)
+is NOT actually ambiguous — the price range genuinely belongs to that one bed
+count. Blending is only correct when the bed count itself spans a real range.
+Four confidence tiers, most to least certain:
+- `direct` — `units == 1`, single suite type, no ambiguity at all
+- `certain` — `beds_lo == beds_hi` regardless of `units`; price range = that
+  bed count's range (this is the tier that changed — previously these fell
+  into `range_only` whenever `units >= 3`)
+- `inferred` — `beds_lo != beds_hi` and `units <= 2`; clean two-type split
+  (price→beds, price2→beds2)
+- `blended` — `beds_lo != beds_hi` and `units >= 3`; genuinely can't resolve
+  which price maps to which bed count (renamed from `range_only`)
+
+Validated against a real payload (2026-08-04, 500 listings): reclassified 12
+listings from the old `range_only` bucket into `certain` with no contradictions
+found (zero cases of `units==1` reporting a differing `beds2`). Final tier
+counts on that sample: direct 162, blended 155, inferred 147, certain 36.
+
+Caveat (found validating against the same payload): `beds_hi` is null in some
+`units >= 2` listings that DO have a `price2` — a real price spread with no
+reported second bed count (33/338 listings with `units >= 2`). Sampled cases
+were all consistent with "same bed count, different floorplan sizes" (supports
+treating as `certain`, not `blended`), but map.json alone can't fully rule out
+a genuinely differing bed count the site just didn't report — unconfirmed
+until cross-checked against detail-page JSON.
 
 Note (confirmed 2026-07-30): for `units >= 3`, `beds`/`beds2` still gives the
 true suite-mix range (e.g. building has both 1-beds and 2-beds on offer), so
@@ -238,6 +261,11 @@ rf_data/
 | 2026-07-30 | Confirmed: units>=3 still gives true suite-mix range via beds/beds2, just not per-type rent mapping (unresolvable without detail-page JSON) |
 | 2026-08-04 | Added user_listings_in_snapshot (portfolio-size signal from userId concentration) and city_totals.csv (metro-wide per-city counts from payload's 'cities' field) |
 | 2026-08-04 | Decided: comparison/trend visualization stays a separate future tool, not baked into rentfaster_ingest.py -- ingest stays extraction/export only |
+| 2026-08-04 | Refined suite-type inference to `direct`/`certain`/`inferred`/`blended`, driven by beds_lo==beds_hi rather than raw units count (see Section 4); `range_only` renamed `blended`. Validated against real payload, 12 listings reclassified from range_only to certain, no contradictions found |
+| 2026-08-04 | Reviewed sample Inventory workbook (5,061 rows): confirmed Address (Normalized) is 99.5% complete vs 44% for raw Address (match on normalized field); confirmed City is 83.4% complete but Subdivision fills most gaps for Edmonton rows; found existing CoStar/FileMaker match uses a reusable multi-signal scoring pattern (units_exact/year_built_exact combinations) worth reusing for Step 3 |
+| 2026-08-04 | Found directional-suffix mismatch risk for Step 3: ~84% of Inventory normalized addresses carry NW/NE/SW/SE, but only ~65% of Rentfaster listing intros do (same capture) -- exact-string address matching will produce false negatives; matching should strip/normalize direction before comparing, treating it as a confidence booster not a requirement |
+| 2026-08-04 | Flagged Owner Company (Inventory) <-> userId (Rentfaster) cross-reference as a high-value future matching signal -- both sources show heavy portfolio concentration (e.g. Boardwalk Equities 68 buildings in Inventory; top Rentfaster userId had 70 concurrent listings). Owner Company names need normalization first (e.g. "Mainstreet Equity Corp" vs "Corp." vs "Inc" — same entity, 3 spellings, 109 buildings) |
+| 2026-08-04 | Rent-table structure planned for Step 4 (not yet built): long/tidy fact table, one row per (Building ID, snapshot_date, suite_type), suite_type either a real bed count or "blended"; incentive fields (has_promo/promo_codes/n_listings_with_promo) live in the same table at the same grain, not a separate one, so incentive-before-rent-change timing stays queryable without a join. Two derived views planned on top: current 12-month wide sheet, and an annual average sheet carrying n_months_observed/n_unique_listings/dominant_rent_confidence so aggregates never lose their support/confidence. Averaging must dedupe by unique listing_id first, not by snapshot row, or a listing that sits unrented for months gets overweighted |
 
 ## 9. Open questions
 
@@ -248,6 +276,25 @@ rf_data/
 4. `f` field interpretation: confirm against more payloads.
 5. Detail-page JSON schema: document when first captured.
 6. Suite mix gaps (~3,100 buildings): manual fill prioritization TBD.
+7. Listing ID stability on dormancy/reactivation: unknown whether a listing_id
+   persists when a unit goes quiet and is re-listed later, or whether Rentfaster
+   issues a new id for what's physically the same unit. Can't be tested from a
+   single snapshot -- needs 2-3+ months of real captures to observe empirically
+   (watch for a listing_id disappearing followed by a new id appearing at the
+   same lat/long + address_slug + similar userId). Matters directly for Step 3:
+   if ids get reissued, the "match once per listing_id, permanent" design needs
+   a secondary key (address_slug + lat/long fingerprint) to survive it, and the
+   annual rent rollup's n_unique_listings would overcount without a fix. Keeping
+   full raw snapshot history (already the plan) is what makes this answerable
+   later without having to re-capture anything.
+8. apartments.com (and similar non-map-first sites) explored 2026-08-04 as a
+   possible second bulk source: no single map.json-equivalent found via
+   Fetch/XHR. Likely lives in paginated search results, inline page JSON
+   (__NEXT_DATA__ / __INITIAL_STATE__-style embeds), or a GraphQL endpoint
+   instead of one bulk payload -- would need per-page-source inspection, not
+   just Network > Fetch/XHR, to confirm. Not yet pursued further; also carries
+   a heavier ToS/anti-scraping risk profile than Rentfaster, worth checking
+   before investing time even for manual capture.
 
 ## 10. Repo structure
 
