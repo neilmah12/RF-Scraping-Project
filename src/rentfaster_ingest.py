@@ -4,8 +4,11 @@ Rentfaster map.json Ingest — Step 1 of the Rentfaster/Inventory integration pi
 Designed for Google Colab or local Python. No scraping: you paste/save map.json
 payloads captured manually from the browser console (Network tab -> map.json ->
 Response -> save to file). Multiple payload files per snapshot are supported and
-encouraged (grab 2-4 zoomed-in quadrants to beat the ~800 listing cap per response;
-the script reports coverage vs the 'total' field).
+encouraged (grab enough zoomed-in quadrants/drawn areas to beat the real ~500
+listing cap per response -- the payload's own 'search.max' field claims 800,
+but two independent captures confirmed the server actually truncates at 500
+regardless; judge a drawn area's size against its 'total' field vs 500, not
+800. The script reports coverage vs the 'total' field).
 
 Outputs (parquet, with CSV mirrors for Excel):
   listings_master.parquet   one row per listing_id (current state + first/last seen)

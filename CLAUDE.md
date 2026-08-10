@@ -90,9 +90,16 @@ Known quirks:
   Confirmed 2026-07-30: `mapRole` (silver/highlighted) only ever appears when
   `f==2`; `f==0`/`f==1` always have `mapRole=None`. Consistent with `f` being
   a paid display tier, not a furnished flag.
-- **~800 listing cap per response** (`search.max`); `total` field gives true count
-  (e.g. 2,496). Multiple zoomed-in quadrant captures per month are required.
-  Ingest script reports coverage and warns <90%.
+- **Real per-response cap is 500 listings, not the 800 implied by `search.max`.**
+  Confirmed 2026-08-10 across two independent captures: both returned exactly
+  500 listings regardless of `total`/drawn area size, even though `search.max`
+  reports `"800"` in the payload. Judge whether a drawn/zoomed area is small
+  enough by checking its `total` field against 500 (aim comfortably under, e.g.
+  ~450, since 500-vs-500 at the boundary is ambiguous — can't tell if you got
+  everything or got truncated right at the edge). `total` field gives the true
+  count for the current filtered view (e.g. 2,496 citywide, 2,251 for a large
+  draw). Multiple zoomed-in quadrant/draw-tool captures per month are required
+  to stay under the real cap. Ingest script reports coverage and warns <90%.
 - Some listings have empty `intro` and generic slug (`rentals-edmonton-NNNNN`):
   no address available, lat/long-only matching with lower confidence.
 
@@ -266,6 +273,7 @@ rf_data/
 | 2026-08-04 | Found directional-suffix mismatch risk for Step 3: ~84% of Inventory normalized addresses carry NW/NE/SW/SE, but only ~65% of Rentfaster listing intros do (same capture) -- exact-string address matching will produce false negatives; matching should strip/normalize direction before comparing, treating it as a confidence booster not a requirement |
 | 2026-08-04 | Flagged Owner Company (Inventory) <-> userId (Rentfaster) cross-reference as a high-value future matching signal -- both sources show heavy portfolio concentration (e.g. Boardwalk Equities 68 buildings in Inventory; top Rentfaster userId had 70 concurrent listings). Owner Company names need normalization first (e.g. "Mainstreet Equity Corp" vs "Corp." vs "Inc" — same entity, 3 spellings, 109 buildings) |
 | 2026-08-04 | Rent-table structure planned for Step 4 (not yet built): long/tidy fact table, one row per (Building ID, snapshot_date, suite_type), suite_type either a real bed count or "blended"; incentive fields (has_promo/promo_codes/n_listings_with_promo) live in the same table at the same grain, not a separate one, so incentive-before-rent-change timing stays queryable without a join. Two derived views planned on top: current 12-month wide sheet, and an annual average sheet carrying n_months_observed/n_unique_listings/dominant_rent_confidence so aggregates never lose their support/confidence. Averaging must dedupe by unique listing_id first, not by snapshot row, or a listing that sits unrented for months gets overweighted |
+| 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
 
 ## 9. Open questions
 
