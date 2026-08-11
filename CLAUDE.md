@@ -113,8 +113,17 @@ Known quirks:
   array length 80) — again on a draw-tool capture, again with `total2` matching.
   Working hypothesis: `total` counts the rectangular bounding box of the drawn
   shape (the `search.area` field is always a bbox, even when `draw: "1"`) while
-  `total2` counts the polygon actually drawn. Unconfirmed; a rectangular draw
-  where the two should agree would test it.
+  `total2` counts the polygon actually drawn. Strengthened 2026-08-11 by the
+  West Central section (`total: 746`, `total2: 369`, array 369): its returned
+  listings stop 3.8 km short of the bbox's west edge and 0.8 km short of the
+  north edge, leaving dense west-end area inside the bbox with zero listings.
+  Listing extent is 57% of bbox area against a 49% count ratio — consistent.
+  Still not proof (a concave polygon's extent overstates its area, which is why
+  NW shows 82% extent against a 52% ratio). Definitive test: one rectangular
+  non-draw-tool capture, where the two fields should agree exactly.
+  Practical consequence: do NOT read `total2 < total` as lost coverage. The
+  gap is area outside the drawn shape, and it gets picked up by the adjacent
+  section.
 - **No top-level `cities` field on draw-tool captures.** Present on the earlier
   whole-city payloads (that's where `city_totals.csv` comes from), absent from
   the 2026-08-11 NW draw. Section-by-section captures therefore lose the free
@@ -328,6 +337,7 @@ rf_data/
 | 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
 | 2026-08-10 | Found `total`/`total2` can diverge (previously always identical); `total2` matches the real `listings` array length when they differ, `total` doesn't. Also observed map filter (property type checkboxes) drifting between draws within one session -- re-check filter before every draw, not just once per session. `ingest_snapshot`'s coverage calc still only reads `total`, not yet updated to prefer `total2` |
 | 2026-08-11 | Restarted the first monthly pull as section-by-section captures, snapshot_date 2026-08-11, staged in `data/raw/2026-08-11/`. Section 1 (NW Edmonton, 80 listings) is well under cap but was drawn with Apartment+Fourplex+Townhouse — Triplex missing again, so it needs a re-draw. Sections are drawn far smaller than they need to be: at 80/500 the NW draw could cover several times the area, so the city needs fewer, larger sections rather than many small ones |
+| 2026-08-11 | Section 2 (West Central, 369 listings, headroom 131) captured. Same Triplex filter gap as section 1 — the checkbox is persistently unset across sessions, so both sections need re-drawing once it is fixed. 17 listings overlap section 1 (dedupes on ingest, harmless) |
 | 2026-08-11 | Added `src/check_capture.py`: per-section QC (cap headroom, `min(total,total2)` vs array length, filter-drift vs the documented type convention, dupes, cross-section overlap). Written because `ingest_snapshot`'s coverage metric is invalid for section captures — it compares `max()` of per-file `total` values against the union count, which cannot detect a missed section |
 | 2026-08-11 | Noted: draw-tool payloads carry no top-level `cities` field, so section-only months lose the `city_totals.csv` metro cross-check. Take one unfiltered whole-city capture per month to preserve it |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
