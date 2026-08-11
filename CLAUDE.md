@@ -109,7 +109,21 @@ Known quirks:
   checking coverage, not `total` alone. Not yet reflected in `ingest_snapshot`'s
   coverage calculation, which currently only reads `total` — worth fixing
   before relying on the coverage warning for captures where the two might
-  differ.
+  differ. Second occurrence 2026-08-11 (NW section: `total: 153`, `total2: 80`,
+  array length 80) — again on a draw-tool capture, again with `total2` matching.
+  Working hypothesis: `total` counts the rectangular bounding box of the drawn
+  shape (the `search.area` field is always a bbox, even when `draw: "1"`) while
+  `total2` counts the polygon actually drawn. Unconfirmed; a rectangular draw
+  where the two should agree would test it.
+- **No top-level `cities` field on draw-tool captures.** Present on the earlier
+  whole-city payloads (that's where `city_totals.csv` comes from), absent from
+  the 2026-08-11 NW draw. Section-by-section captures therefore lose the free
+  metro-wide coverage cross-check — take one unfiltered whole-city capture per
+  month alongside the sections if that cross-check is wanted.
+- Fields present in map.json but not yet used: `title` (listing headline, often
+  carries the incentive in plain text e.g. "1 Month Free Rent" — a text-side
+  cross-check on the `promotions` codes), `marker` (opaque hash), `thumb2`,
+  `has_book_tour`, `request_tour_enabled`, `v`.
 - **Map filter (property type checkboxes) can silently drift between draws
   within the same session** — observed 2026-08-10 across several captures in
   one sitting: some included Condo Unit (against the documented
@@ -185,6 +199,25 @@ documented; capture an example when first needed.
 - Parsing handled: "studio"→0 beds, "+den" flag, junk prices (<$100 → null),
   address from slug (city + id stripped), promo flags
 - Coverage report vs site `total`; warns below 90%
+
+### Capture QC (check_capture.py, added 2026-08-11)
+
+Run on every section file as it comes off the browser, before ingesting:
+`python src/check_capture.py data/raw/<snapshot_date>/*.json`
+
+Checks per file: listings vs the real 500 cap (flags at/near cap), array length
+vs `min(total, total2)`, active `search.type` filter vs the
+Apartment+Townhouse+Triplex+Fourplex/no-condo convention, duplicate ids, and
+city/type/bbox composition. Across a section set it also reports cross-section
+overlap so double-drawn areas are visible before ingest dedupes them silently.
+
+This exists because `ingest_snapshot`'s coverage number does not work for
+section-by-section captures: it takes `max()` of the per-file `total` values and
+compares that single number to the union of all files. With sections, each file
+has its own total for its own drawn area, so that ratio is meaningless (it reads
+as ~100%+ coverage no matter what was missed). Per-file truncation checking plus
+a whole-city cross-check is the workable substitute. Fix the aggregate before
+relying on it.
 
 ### Matching design (step 3, agreed)
 
@@ -294,6 +327,9 @@ rf_data/
 | 2026-08-04 | Rent-table structure planned for Step 4 (not yet built): long/tidy fact table, one row per (Building ID, snapshot_date, suite_type), suite_type either a real bed count or "blended"; incentive fields (has_promo/promo_codes/n_listings_with_promo) live in the same table at the same grain, not a separate one, so incentive-before-rent-change timing stays queryable without a join. Two derived views planned on top: current 12-month wide sheet, and an annual average sheet carrying n_months_observed/n_unique_listings/dominant_rent_confidence so aggregates never lose their support/confidence. Averaging must dedupe by unique listing_id first, not by snapshot row, or a listing that sits unrented for months gets overweighted |
 | 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
 | 2026-08-10 | Found `total`/`total2` can diverge (previously always identical); `total2` matches the real `listings` array length when they differ, `total` doesn't. Also observed map filter (property type checkboxes) drifting between draws within one session -- re-check filter before every draw, not just once per session. `ingest_snapshot`'s coverage calc still only reads `total`, not yet updated to prefer `total2` |
+| 2026-08-11 | Restarted the first monthly pull as section-by-section captures, snapshot_date 2026-08-11, staged in `data/raw/2026-08-11/`. Section 1 (NW Edmonton, 80 listings) is well under cap but was drawn with Apartment+Fourplex+Townhouse — Triplex missing again, so it needs a re-draw. Sections are drawn far smaller than they need to be: at 80/500 the NW draw could cover several times the area, so the city needs fewer, larger sections rather than many small ones |
+| 2026-08-11 | Added `src/check_capture.py`: per-section QC (cap headroom, `min(total,total2)` vs array length, filter-drift vs the documented type convention, dupes, cross-section overlap). Written because `ingest_snapshot`'s coverage metric is invalid for section captures — it compares `max()` of per-file `total` values against the union count, which cannot detect a missed section |
+| 2026-08-11 | Noted: draw-tool payloads carry no top-level `cities` field, so section-only months lose the `city_totals.csv` metro cross-check. Take one unfiltered whole-city capture per month to preserve it |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 
 ## 9. Open questions
@@ -333,6 +369,7 @@ RF-Scraping-Project/
   README.md
   src/
     rentfaster_ingest.py     <- exists (step 1)
+    check_capture.py         <- capture QC: run per section file before ingest
     geocode_inventory.py     <- step 2
     match_engine.py          <- step 3
     rent_table.py            <- step 4
