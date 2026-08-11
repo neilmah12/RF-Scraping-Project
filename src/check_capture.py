@@ -33,7 +33,7 @@ HARD_CAP = 500
 # is the ambiguous zone where 500-vs-500 can't be distinguished from truncation.
 SAFE_TOTAL = 450
 
-EXPECTED_TYPES = {"Apartment", "Townhouse", "Triplex", "Fourplex"}
+EXPECTED_TYPES = {"Apartment", "Townhouse", "Fourplex"}
 BANNED_TYPES = {"Condo Unit"}
 
 CITY_NAMES = {
