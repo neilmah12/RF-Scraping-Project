@@ -100,6 +100,25 @@ Known quirks:
   count for the current filtered view (e.g. 2,496 citywide, 2,251 for a large
   draw). Multiple zoomed-in quadrant/draw-tool captures per month are required
   to stay under the real cap. Ingest script reports coverage and warns <90%.
+- **`total` and `total2` can diverge; when they do, `total2` matches the actual
+  `listings` array length, not `total`.** Confirmed 2026-08-10 on a small
+  draw-tool capture (`total: 154`, `total2: 89`, `listings` length 89). In
+  every earlier capture the two fields were identical, so this wasn't visible
+  until a smaller/narrower-filtered draw exposed it. Use `total2` (or
+  `min(total, total2)`) as the authoritative "true count for this view" when
+  checking coverage, not `total` alone. Not yet reflected in `ingest_snapshot`'s
+  coverage calculation, which currently only reads `total` — worth fixing
+  before relying on the coverage warning for captures where the two might
+  differ.
+- **Map filter (property type checkboxes) can silently drift between draws
+  within the same session** — observed 2026-08-10 across several captures in
+  one sitting: some included Condo Unit (against the documented
+  Apartment+Townhouse+Triplex+Fourplex/no-condo convention), one dropped
+  Townhouse and Triplex entirely. This is a structural gap, not a coverage
+  problem — a dropped property type is invisible for that whole quadrant, and
+  the coverage percentage can't catch it since it's computed against whatever
+  total the active (wrong) filter returns. Re-check the filter checkboxes
+  before every single draw, not just at the start of a session.
 - Some listings have empty `intro` and generic slug (`rentals-edmonton-NNNNN`):
   no address available, lat/long-only matching with lower confidence.
 
@@ -274,6 +293,8 @@ rf_data/
 | 2026-08-04 | Flagged Owner Company (Inventory) <-> userId (Rentfaster) cross-reference as a high-value future matching signal -- both sources show heavy portfolio concentration (e.g. Boardwalk Equities 68 buildings in Inventory; top Rentfaster userId had 70 concurrent listings). Owner Company names need normalization first (e.g. "Mainstreet Equity Corp" vs "Corp." vs "Inc" — same entity, 3 spellings, 109 buildings) |
 | 2026-08-04 | Rent-table structure planned for Step 4 (not yet built): long/tidy fact table, one row per (Building ID, snapshot_date, suite_type), suite_type either a real bed count or "blended"; incentive fields (has_promo/promo_codes/n_listings_with_promo) live in the same table at the same grain, not a separate one, so incentive-before-rent-change timing stays queryable without a join. Two derived views planned on top: current 12-month wide sheet, and an annual average sheet carrying n_months_observed/n_unique_listings/dominant_rent_confidence so aggregates never lose their support/confidence. Averaging must dedupe by unique listing_id first, not by snapshot row, or a listing that sits unrented for months gets overweighted |
 | 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
+| 2026-08-10 | Found `total`/`total2` can diverge (previously always identical); `total2` matches the real `listings` array length when they differ, `total` doesn't. Also observed map filter (property type checkboxes) drifting between draws within one session -- re-check filter before every draw, not just once per session. `ingest_snapshot`'s coverage calc still only reads `total`, not yet updated to prefer `total2` |
+| 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 
 ## 9. Open questions
 
