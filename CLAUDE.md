@@ -57,9 +57,35 @@ Refi screening is therefore a JOIN, not a build.
 **No automated scraping.** Rentfaster has bot protection; the workflow is a manual
 monthly console capture. Neil filters the map (Apartment + Townhouse + Fourplex;
 Triplex and condo units excluded — Triplex dropped 2026-08-11, not really
-multifamily; may revisit), opens DevTools Network tab,
-and saves map.json responses. Pipeline ingests whatever files he saves. Keep it
-this way — do not add automated fetching.
+multifamily; may revisit), opens DevTools Network tab (or uses the console
+capture helper below), and saves map.json responses. Pipeline ingests whatever
+files he saves. Keep it this way — do not add automated fetching: every
+capture must still originate from Neil manually panning/zooming/drawing on the
+map in a real browser session. Nothing may issue its own requests to
+Rentfaster or drive the map without him.
+
+### Console capture helper (tools/rf_console_capture.js, added 2026-08-11)
+
+Removes the manual "open Network tab, find the map.json request, Save
+Response As" step per capture — it does not remove or automate the panning
+itself. Paste the script into the DevTools console once per session; it hooks
+`fetch`/`XMLHttpRequest` on the page and recognizes a response as a capture by
+its shape (`listings` array + `search` object), not by URL, so it works
+regardless of which transport the map uses. Every matching response the
+browser receives while Neil pans/zooms/draws gets stored in memory with a
+timestamp. `rfStatus()` shows what's accumulated so far; `rfDownload()`
+downloads everything from the session as one combined file
+(`rf_captures_<timestamp>.json`, shape `{"captures": [payload, ...]}`);
+`rfClear()` wipes memory without needing a page reload. Captures live only in
+page memory — reloading the tab loses anything not yet downloaded.
+
+`check_capture.py` understands both shapes: a single raw map.json payload
+(the original per-draw file) or a combined `{"captures": [...]}` file, QC'ing
+each sub-capture individually and reporting cross-capture overlap same as it
+already does across separate files. No dedup happens in the browser — the
+existing id-based dedup in `ingest_snapshot` (and the overlap reporting in
+`check_capture.py`) already handles it, same as overlapping hand-drawn
+sections always have.
 
 ### map.json schema (documented 2026-07-30)
 
@@ -343,6 +369,7 @@ rf_data/
 | 2026-08-11 | Dropped Triplex from the filter convention (Neil: not really multifamily; may loop back). Convention is now Apartment + Townhouse + Fourplex, no condo. `check_capture.py`'s EXPECTED_TYPES updated to match; sections 1-3 (NW, West Central, West Central South), all flagged for a Triplex gap under the old convention, are retroactively clean and need no re-draw |
 | 2026-08-11 | Added `src/check_capture.py`: per-section QC (cap headroom, `min(total,total2)` vs array length, filter-drift vs the documented type convention, dupes, cross-section overlap). Written because `ingest_snapshot`'s coverage metric is invalid for section captures — it compares `max()` of per-file `total` values against the union count, which cannot detect a missed section |
 | 2026-08-11 | Noted: draw-tool payloads carry no top-level `cities` field, so section-only months lose the `city_totals.csv` metro cross-check. Take one unfiltered whole-city capture per month to preserve it |
+| 2026-08-11 | Added `tools/rf_console_capture.js`: a browser console snippet that hooks fetch/XHR to auto-capture every map.json-shaped response while Neil pans the map manually, replacing the manual per-request "Save Response As" step. Does not automate the panning/fetching itself -- every request still originates from a manual map interaction in a real browser session, consistent with the no-automated-fetching rule. Exports one combined `{"captures": [...]}` file per session via `rfDownload()`. `check_capture.py` extended to QC either shape (single payload or combined file), reporting cross-capture overlap the same way it already does across separate files |
 | 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 
@@ -388,6 +415,9 @@ RF-Scraping-Project/
     match_engine.py          <- step 3
     rent_table.py            <- step 4
     signals.py               <- step 5
+  tools/
+    rf_console_capture.js    <- browser console helper: auto-saves map.json
+                                 responses while Neil pans manually (2026-08-11)
   data/
     raw/                     <- monthly map.json captures (gitignored)
     rf_data/                 <- pipeline outputs (gitignored, logs kept via .gitkeep)

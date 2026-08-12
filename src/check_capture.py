@@ -1,7 +1,7 @@
 """
 Capture QC — per-section validator for manual Rentfaster map.json captures
 ==========================================================================
-Run this on every section file the moment it comes off the browser, before
+Run this on every capture file the moment it comes off the browser, before
 ingesting anything. It catches the two failure modes that a monthly capture
 can't recover from after the fact:
 
@@ -13,8 +13,14 @@ can't recover from after the fact:
      "complete" for whatever filter was actually active -- so it has to be
      checked against the expected set explicitly.
 
-Convention (CLAUDE.md section 4): Apartment + Townhouse + Triplex + Fourplex,
-Condo Unit excluded (condo units are not market rent).
+Convention (CLAUDE.md section 4): Apartment + Townhouse + Fourplex, Condo Unit
+and Triplex excluded (Triplex dropped 2026-08-11, not really multifamily).
+
+Accepts two file shapes:
+  - A single raw map.json payload (one draw/pan capture, the original workflow).
+  - A combined file from tools/rf_console_capture.js: {"captures": [payload, ...]}
+    -- everything the console helper captured across a whole panning session in
+    one file. Each sub-capture is QC'd individually, same as separate files.
 
 Usage:
     python src/check_capture.py data/raw/2026-08-11/*.json
@@ -43,11 +49,8 @@ CITY_NAMES = {
 }
 
 
-def check_file(path):
-    """QC one capture file. Returns a dict of findings; prints a readable report."""
-    path = Path(path)
-    data = json.loads(path.read_text())
-
+def _analyze_payload(data, label):
+    """QC one raw map.json payload dict. Prints a readable report, returns findings."""
     listings = data.get("listings") or []
     n = len(listings)
     ids = [x.get("id") for x in listings]
@@ -56,7 +59,7 @@ def check_file(path):
     total = data.get("total")
     total2 = data.get("total2")
     # total2 tracks the actual listings array when the two diverge (confirmed
-    # 2026-08-10); total appears to count a wider area than the drawn polygon.
+    # 2026-08-10); total appears to count a wider area than the drawn/visible shape.
     effective_total = min([t for t in (total, total2) if t is not None], default=None)
 
     search = data.get("search") or {}
@@ -67,13 +70,13 @@ def check_file(path):
     # ---- truncation
     if n >= HARD_CAP:
         problems.append(
-            f"AT CAP: {n} listings returned (cap {HARD_CAP}). This section is "
-            f"almost certainly truncated -- re-draw it smaller and split in two."
+            f"AT CAP: {n} listings returned (cap {HARD_CAP}). This capture is "
+            f"almost certainly truncated -- narrow the area/filter and split in two."
         )
     elif effective_total and effective_total > SAFE_TOTAL:
         problems.append(
             f"NEAR CAP: effective total {effective_total} is within {HARD_CAP - SAFE_TOTAL} "
-            f"of the cap. Re-draw smaller for headroom."
+            f"of the cap. Narrow it for headroom."
         )
 
     if effective_total is not None and n < effective_total:
@@ -83,7 +86,7 @@ def check_file(path):
         )
 
     if n_unique != n:
-        notes.append(f"{n - n_unique} duplicate listing ids within this file (deduped on ingest)")
+        notes.append(f"{n - n_unique} duplicate listing ids within this capture (deduped on ingest)")
 
     # ---- filter drift
     missing = EXPECTED_TYPES - active_types
@@ -91,12 +94,12 @@ def check_file(path):
     if missing:
         problems.append(
             f"FILTER GAP: {', '.join(sorted(missing))} not in the active filter. "
-            f"Those property types are invisible for this whole section -- re-draw."
+            f"Those property types are invisible for this whole capture -- redo it."
         )
     if extra & BANNED_TYPES:
         problems.append(
             f"FILTER GAP: {', '.join(sorted(extra & BANNED_TYPES))} included against "
-            f"convention (condo units are not market rent) -- re-draw or filter on ingest."
+            f"convention (condo units are not market rent) -- redo or filter on ingest."
         )
     elif extra:
         notes.append(f"unexpected type(s) in filter: {', '.join(sorted(extra))}")
@@ -111,7 +114,7 @@ def check_file(path):
     bbox = (min(lat), min(lon), max(lat), max(lon)) if lat else None
 
     # ---- report
-    print(f"\n=== {path.name} ===")
+    print(f"\n=== {label} ===")
     print(f"listings: {n} ({n_unique} unique) | cap {HARD_CAP} | "
           f"headroom {HARD_CAP - n}")
     print(f"total: {total} | total2: {total2} | effective: {effective_total}")
@@ -121,7 +124,7 @@ def check_file(path):
     if bbox:
         print(f"listing bbox: lat {bbox[0]:.4f}..{bbox[2]:.4f}  lon {bbox[1]:.4f}..{bbox[3]:.4f}")
     if search.get("area"):
-        print(f"drawn area:   {search['area']}")
+        print(f"drawn/visible area: {search['area']}")
 
     for p in problems:
         print(f"  [PROBLEM] {p}")
@@ -131,16 +134,41 @@ def check_file(path):
         print("  OK -- under cap, filter matches convention.")
 
     return {
-        "file": path.name, "n": n, "n_unique": n_unique, "ids": set(ids),
+        "file": label, "n": n, "n_unique": n_unique, "ids": set(ids),
         "total": total, "total2": total2, "effective_total": effective_total,
         "active_types": active_types, "by_city": by_city, "by_type": by_type,
         "bbox": bbox, "problems": problems, "notes": notes,
     }
 
 
+def check_file(path):
+    """QC one file on disk. Returns a list of per-capture findings dicts --
+    length 1 for a normal single-payload file, or one entry per sub-capture
+    for a combined {"captures": [...]} file from rf_console_capture.js."""
+    path = Path(path)
+    raw = json.loads(path.read_text())
+
+    if isinstance(raw, dict) and isinstance(raw.get("captures"), list):
+        results = [
+            _analyze_payload(payload, f"{path.name}#{i}")
+            for i, payload in enumerate(raw["captures"], 1)
+        ]
+        all_ids, overlap = set(), 0
+        for r in results:
+            overlap += len(all_ids & r["ids"])
+            all_ids |= r["ids"]
+        print(f"\n--- {path.name}: {len(results)} captures in this file, "
+              f"{len(all_ids)} unique listings, {overlap} overlap between them ---")
+        return results
+
+    return [_analyze_payload(raw, path.name)]
+
+
 def check_section_set(paths):
-    """QC a whole snapshot's worth of sections and report cross-file overlap."""
-    results = [check_file(p) for p in paths]
+    """QC a whole snapshot's worth of files and report cross-file overlap.
+    Each file may itself contain multiple captures (see check_file); all of
+    them are flattened into one pool for the overlap/coverage summary."""
+    results = [r for p in paths for r in check_file(p)]
     if len(results) < 2:
         return results
 
@@ -150,18 +178,18 @@ def check_section_set(paths):
         all_ids |= r["ids"]
 
     total_rows = sum(r["n"] for r in results)
-    print(f"\n=== section set ({len(results)} files) ===")
+    print(f"\n=== full set ({len(results)} captures across {len(paths)} file(s)) ===")
     print(f"rows: {total_rows} | unique listings: {len(all_ids)} | "
-          f"cross-section overlap: {overlap}")
+          f"cross-capture overlap: {overlap}")
     cities = Counter()
     for r in results:
         cities.update(r["by_city"])
     print(f"cities: {dict(cities)}")
     flagged = [r["file"] for r in results if r["problems"]]
     if flagged:
-        print(f"sections needing attention: {', '.join(flagged)}")
+        print(f"captures needing attention: {', '.join(flagged)}")
     else:
-        print("all sections clean")
+        print("all captures clean")
     return results
 
 
