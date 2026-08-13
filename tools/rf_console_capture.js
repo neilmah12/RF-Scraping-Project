@@ -27,6 +27,15 @@
  *
  * Captures live only in this tab's memory -- a page reload wipes them, so
  * download before refreshing or closing the tab.
+ *
+ * A slow pan/zoom can fire a new map.json on nearly every small viewport
+ * shift, mostly re-fetching listings already seen this session. Rather than
+ * storing every one of those (bloats the download and the QC report for no
+ * new coverage), a response is only kept if it contains at least one listing
+ * id not already captured this session -- pure re-fetch spam during a drag
+ * is silently dropped, tallied in rfSkipped so you can see how much was
+ * filtered. Nothing about this affects which requests the browser makes --
+ * it only decides what gets stored after the fact.
  */
 (function () {
   if (window.__rfCaptureInstalled) {
@@ -34,6 +43,8 @@
     return;
   }
   window.__rfCaptures = [];
+  window.__rfSeenIds = new Set();
+  window.__rfSkipped = 0;
   window.__rfCaptureInstalled = true;
 
   function looksLikeMapPayload(obj) {
@@ -43,12 +54,17 @@
 
   function record(obj, source) {
     if (!looksLikeMapPayload(obj)) return;
-    const seenIds = new Set(window.__rfCaptures.flatMap(c => c.data.listings.map(l => l.id)));
-    const newIds = obj.listings.filter(l => !seenIds.has(l.id)).length;
+    const before = window.__rfSeenIds.size;
+    obj.listings.forEach(l => window.__rfSeenIds.add(l.id));
+    const newCount = window.__rfSeenIds.size - before;
+    if (newCount === 0) {
+      window.__rfSkipped++;
+      return;
+    }
     window.__rfCaptures.push({ ts: new Date().toISOString(), source, data: obj });
     console.log(
       `[rf-capture] #${window.__rfCaptures.length} captured: ${obj.listings.length} listings ` +
-      `(total=${obj.total}, total2=${obj.total2}, ${newIds} new ids, types=${(obj.search.type || []).join('+')})`
+      `(total=${obj.total}, total2=${obj.total2}, ${newCount} new ids, types=${(obj.search.type || []).join('+')})`
     );
   }
 
@@ -78,15 +94,17 @@
   };
 
   window.rfStatus = function () {
-    const allIds = new Set(window.__rfCaptures.flatMap(c => c.data.listings.map(l => l.id)));
-    console.log(`[rf-capture] ${window.__rfCaptures.length} captures, ${allIds.size} unique listings total this session.`);
+    console.log(
+      `[rf-capture] ${window.__rfCaptures.length} captures kept, ${window.__rfSeenIds.size} unique ` +
+      `listings total this session (${window.__rfSkipped} redundant responses skipped, no new ids).`
+    );
     window.__rfCaptures.forEach((c, i) => {
       console.log(
         `  #${i + 1} [${c.ts}] ${c.data.listings.length} listings, total=${c.data.total}, ` +
         `total2=${c.data.total2}, area=${c.data.search.area || '(none)'}`
       );
     });
-    return { captures: window.__rfCaptures.length, uniqueListings: allIds.size };
+    return { captures: window.__rfCaptures.length, uniqueListings: window.__rfSeenIds.size, skipped: window.__rfSkipped };
   };
 
   window.rfDownload = function () {
@@ -110,6 +128,8 @@
 
   window.rfClear = function () {
     window.__rfCaptures = [];
+    window.__rfSeenIds = new Set();
+    window.__rfSkipped = 0;
     console.log('[rf-capture] cleared. Session continues -- pan to capture more.');
   };
 

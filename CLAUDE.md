@@ -73,11 +73,17 @@ itself. Paste the script into the DevTools console once per session; it hooks
 its shape (`listings` array + `search` object), not by URL, so it works
 regardless of which transport the map uses. Every matching response the
 browser receives while Neil pans/zooms/draws gets stored in memory with a
-timestamp. `rfStatus()` shows what's accumulated so far; `rfDownload()`
-downloads everything from the session as one combined file
-(`rf_captures_<timestamp>.json`, shape `{"captures": [payload, ...]}`);
-`rfClear()` wipes memory without needing a page reload. Captures live only in
-page memory — reloading the tab loses anything not yet downloaded.
+timestamp, unless it contains zero listing ids not already captured this
+session (a slow pan/zoom fires a new map.json on nearly every small viewport
+shift, mostly re-fetching listings already seen — those are silently dropped
+and tallied in a skip counter rather than bloating the download and QC output
+with pure duplicates; a response with even one new id is still kept in full).
+`rfStatus()` shows what's accumulated so far plus the skip count;
+`rfDownload()` downloads everything kept from the session as one combined
+file (`rf_captures_<timestamp>.json`, shape `{"captures": [payload, ...]}`);
+`rfClear()` wipes memory (captures, seen-id set, skip counter) without
+needing a page reload. Captures live only in page memory — reloading the tab
+loses anything not yet downloaded.
 
 `check_capture.py` understands both shapes: a single raw map.json payload
 (the original per-draw file) or a combined `{"captures": [...]}` file, QC'ing
@@ -370,6 +376,7 @@ rf_data/
 | 2026-08-11 | Added `src/check_capture.py`: per-section QC (cap headroom, `min(total,total2)` vs array length, filter-drift vs the documented type convention, dupes, cross-section overlap). Written because `ingest_snapshot`'s coverage metric is invalid for section captures — it compares `max()` of per-file `total` values against the union count, which cannot detect a missed section |
 | 2026-08-11 | Noted: draw-tool payloads carry no top-level `cities` field, so section-only months lose the `city_totals.csv` metro cross-check. Take one unfiltered whole-city capture per month to preserve it |
 | 2026-08-11 | Added `tools/rf_console_capture.js`: a browser console snippet that hooks fetch/XHR to auto-capture every map.json-shaped response while Neil pans the map manually, replacing the manual per-request "Save Response As" step. Does not automate the panning/fetching itself -- every request still originates from a manual map interaction in a real browser session, consistent with the no-automated-fetching rule. Exports one combined `{"captures": [...]}` file per session via `rfDownload()`. `check_capture.py` extended to QC either shape (single payload or combined file), reporting cross-capture overlap the same way it already does across separate files |
+| 2026-08-11 | Extended `rf_console_capture.js` to skip storing a response if it contains zero listing ids not already captured this session -- a slow pan/zoom fires a new map.json on nearly every small viewport shift, mostly redundant with what was just captured, so this avoids bloating the downloaded file and `check_capture.py`'s per-capture printout with near-duplicates. Tracked via a running seen-id set and skip counter, both surfaced in `rfStatus()` and reset by `rfClear()`. Verified in a Node harness with mocked fetch/XHR: a fully-redundant response is dropped and counted as skipped, a partially-overlapping one is kept and its new-id count is correct |
 | 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 
