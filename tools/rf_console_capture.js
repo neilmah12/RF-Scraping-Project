@@ -72,7 +72,13 @@
   const origFetch = window.fetch;
   window.fetch = function (...args) {
     return origFetch.apply(this, args).then(res => {
-      res.clone().json().then(obj => record(obj, 'fetch:' + (args[0] && args[0].url ? args[0].url : args[0]))).catch(() => {});
+      // This runs for every fetch on the page, not just map.json -- clone()
+      // can throw synchronously for some response types (redirects, opaque
+      // responses, etc.). Never let that reject the promise we hand back to
+      // the page's own code, or its normal fetch calls start failing.
+      try {
+        res.clone().json().then(obj => record(obj, 'fetch:' + (args[0] && args[0].url ? args[0].url : args[0]))).catch(() => {});
+      } catch (e) { /* not clonable/parseable, ignore */ }
       return res;
     });
   };
