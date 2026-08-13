@@ -25,8 +25,11 @@
  *   5. Run `rfClear()` to wipe memory and start a fresh session without
  *      reloading the page.
  *
- * Captures live only in this tab's memory -- a page reload wipes them, so
- * download before refreshing or closing the tab.
+ * Safe to paste again any time (e.g. to pick up a fix to this script) --
+ * doing so swaps in fresh hooks from the real native fetch/XHR and keeps
+ * everything already captured. No page reload needed, and reloading is the
+ * one thing that DOES wipe memory, so download before refreshing or closing
+ * the tab if you want to keep what you've got.
  *
  * A slow pan/zoom can fire a new map.json on nearly every small viewport
  * shift, mostly re-fetching listings already seen this session. Rather than
@@ -38,13 +41,24 @@
  * it only decides what gets stored after the fact.
  */
 (function () {
-  if (window.__rfCaptureInstalled) {
-    console.log('[rf-capture] already installed. Captures so far:', window.__rfCaptures.length);
-    return;
-  }
-  window.__rfCaptures = [];
-  window.__rfSeenIds = new Set();
-  window.__rfSkipped = 0;
+  // Save the true native fetch/XHR only once. Re-pasting this script later
+  // (e.g. after a bugfix) always re-wraps from these originals instead of
+  // stacking a new wrapper on top of the previous one.
+  if (!window.__rfNativeFetch) window.__rfNativeFetch = window.fetch;
+  if (!window.__rfNativeXHROpen) window.__rfNativeXHROpen = XMLHttpRequest.prototype.open;
+  if (!window.__rfNativeXHRSend) window.__rfNativeXHRSend = XMLHttpRequest.prototype.send;
+
+  // Restore native before re-wrapping so a second paste replaces the hooks
+  // cleanly rather than double-wrapping (which would record every response
+  // twice). Existing captures/seen-ids/skip count are kept, not reset.
+  window.fetch = window.__rfNativeFetch;
+  XMLHttpRequest.prototype.open = window.__rfNativeXHROpen;
+  XMLHttpRequest.prototype.send = window.__rfNativeXHRSend;
+
+  window.__rfCaptures = window.__rfCaptures || [];
+  window.__rfSeenIds = window.__rfSeenIds || new Set();
+  window.__rfSkipped = window.__rfSkipped || 0;
+  const isUpdate = window.__rfCaptureInstalled === true;
   window.__rfCaptureInstalled = true;
 
   function looksLikeMapPayload(obj) {
@@ -69,7 +83,7 @@
   }
 
   // fetch hook
-  const origFetch = window.fetch;
+  const origFetch = window.__rfNativeFetch;
   window.fetch = function (...args) {
     return origFetch.apply(this, args).then(res => {
       // This runs for every fetch on the page, not just map.json -- clone()
@@ -84,8 +98,8 @@
   };
 
   // XHR hook (in case the map uses XMLHttpRequest instead of fetch)
-  const origOpen = XMLHttpRequest.prototype.open;
-  const origSend = XMLHttpRequest.prototype.send;
+  const origOpen = window.__rfNativeXHROpen;
+  const origSend = window.__rfNativeXHRSend;
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this.__rfUrl = url;
     return origOpen.call(this, method, url, ...rest);
@@ -139,7 +153,14 @@
     console.log('[rf-capture] cleared. Session continues -- pan to capture more.');
   };
 
-  console.log('[rf-capture] installed. Pan/zoom the map normally -- every map.json response is captured automatically.');
+  if (isUpdate) {
+    console.log(
+      `[rf-capture] hooks refreshed (e.g. picked up a script update). Kept ${window.__rfCaptures.length} ` +
+      `existing captures, ${window.__rfSeenIds.size} unique listings, ${window.__rfSkipped} skipped.`
+    );
+  } else {
+    console.log('[rf-capture] installed. Pan/zoom the map normally -- every map.json response is captured automatically.');
+  }
   console.log('  rfStatus()   -> see what has been captured so far');
   console.log('  rfDownload() -> download everything as one combined .json file');
   console.log('  rfClear()    -> wipe captures and start over (same page, no reload needed)');
