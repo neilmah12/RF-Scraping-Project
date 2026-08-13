@@ -97,7 +97,7 @@ sections always have.
 
 Per listing: `id`/`ref_id` (stable listing ID), `userId`, `latitude`, `longitude`,
 `city`, `city_id` (2=Edmonton, 43=St. Albert, 33=Sherwood Park, 34=Spruce Grove,
-39=Leduc, 31=Fort Sask, 36=Beaumont), `community`, `type`, `intro` (display
+39=Leduc, 31=Fort Sask, 36=Beaumont, 35=Stony Plain), `community`, `type`, `intro` (display
 address, sometimes empty), `link` (slug contains civic address), `date`
 (posted/renewed — NOT a days-on-market origin), `availability`/`a`, `units`
 (count of distinct suite types advertised), `beds`/`beds2` (range, values incl
@@ -157,6 +157,25 @@ Known quirks:
   Practical consequence: do NOT read `total2 < total` as lost coverage. The
   gap is area outside the drawn shape, and it gets picked up by the adjacent
   section.
+- **New truncation pattern found 2026-08-13 in real console-capture data,
+  where `total == total2` but the `listings` array is still short of both.**
+  Seen on `"e": "zoom_changed"` events (plain rectangular viewport, no draw
+  tool) at intermediate zoom levels: e.g. one capture returned 426 listings
+  while `total`/`total2` both agreed on 921; another returned 406 of 904;
+  another 374 of 836. This breaks the assumption from the 2026-08-10/11 notes
+  above that `total2` (or `min(total, total2)`) always equals the real array
+  length when the two fields agree with each other -- here they agree with
+  each other and still overstate what came back. Distinct from the plain
+  500-hard-cap truncation (still present and unchanged: several early
+  wide-zoomed-out captures in the same session hit exactly 500 of a much
+  higher total, e.g. 500 of 1,756). Mechanism unconfirmed -- possibly the
+  map's own front end deliberately requesting fewer results at certain zoom
+  levels to reduce marker clutter, independent of the server's ~500 hard cap.
+  `check_capture.py`'s existing SHORT check (`n < effective_total`) already
+  catches this correctly regardless of cause, since it compares the actual
+  array length directly rather than relying on the total2-equals-length
+  shortcut -- no code change was needed, just an update to what we believed
+  about when total2 can be trusted.
 - **No top-level `cities` field on draw-tool captures.** Present on the earlier
   whole-city payloads (that's where `city_totals.csv` comes from), absent from
   the 2026-08-11 NW draw. Section-by-section captures therefore lose the free
@@ -379,6 +398,7 @@ rf_data/
 | 2026-08-11 | Extended `rf_console_capture.js` to skip storing a response if it contains zero listing ids not already captured this session -- a slow pan/zoom fires a new map.json on nearly every small viewport shift, mostly redundant with what was just captured, so this avoids bloating the downloaded file and `check_capture.py`'s per-capture printout with near-duplicates. Tracked via a running seen-id set and skip counter, both surfaced in `rfStatus()` and reset by `rfClear()`. Verified in a Node harness with mocked fetch/XHR: a fully-redundant response is dropped and counted as skipped, a partially-overlapping one is kept and its new-id count is correct |
 | 2026-08-13 | Fixed a real bug in `rf_console_capture.js` found live during Neil's first capture session: the `fetch` hook called `res.clone()` on every fetch the page made (not just map.json), and a synchronous throw from `clone()` on some other response type propagated up through the `.then()` callback, rejecting the promise handed back to the page's own code -- surfaced as a flood of "Uncaught (in promise) undefined" console errors on every pan, unrelated to Rentfaster's own bot protection. Fixed by wrapping the clone/parse call in try/catch so nothing here can ever affect the pass-through response the page depends on. Verified with a Node harness simulating a `clone()` throw: the wrapped fetch now resolves normally instead of rejecting. Capture data itself was never affected -- listing counts and total/total2 stayed sane throughout, this only affected other unrelated requests on the page |
 | 2026-08-13 | Fixed a second issue found in the same session: the script's original "already installed" guard meant re-pasting an updated version (e.g. the bugfix above) into the same tab silently did nothing, leaving the old hooks running -- the only way to actually pick up a fix was a full page reload (losing pan position and captured-but-undownloaded data). Reworked to save the true native fetch/XHR once, then have every paste restore-then-rewrap from those originals while preserving existing captures/seen-ids/skip count. Re-pasting this script is now always safe: it swaps in fresh hooks and keeps everything already captured, no reload needed. Verified with a Node harness: re-invoking the script preserves prior capture state, does not double-record a subsequent response, and calls the native fetch exactly once per request (no wrapper stacking) |
+| 2026-08-13 | First real `rf_console_capture.js` session ingested: `data/raw/2026-08-11/console_session_1.json`, 60 sub-captures via one `rfDownload()`, 1,290 unique listings. Cities: Edmonton 6,905 rows, plus St. Albert, Sherwood Park, Spruce Grove, Leduc, Fort Saskatchewan, Beaumont, and Stony Plain (city_id 35, not previously seen -- added to `check_capture.py`'s CITY_NAMES and the map.json schema notes). 7 of 60 captures flagged: 4 hit the plain 500 hard cap (early wide zoomed-out views, e.g. 500 of a 1,756 total), 3 are the new sub-cap truncation pattern documented above. Checked whether the 53 clean captures alone cover what the 7 flagged ones saw: 67 of the 1,290 unique listings (~5%) appear ONLY in a flagged/truncated capture, unconfirmed by any clean one -- a real but small residual coverage gap in the areas those 7 captures covered, not a blocking problem given the project's ~80% accuracy target, but worth a supplemental zoomed-in pass over those 7 areas if Neil wants to close it this cycle |
 | 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 

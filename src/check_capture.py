@@ -45,7 +45,7 @@ BANNED_TYPES = {"Condo Unit"}
 CITY_NAMES = {
     "2": "Edmonton", "43": "St. Albert", "33": "Sherwood Park",
     "34": "Spruce Grove", "39": "Leduc", "31": "Fort Saskatchewan",
-    "36": "Beaumont",
+    "36": "Beaumont", "35": "Stony Plain",
 }
 
 
