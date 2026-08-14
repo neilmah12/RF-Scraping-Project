@@ -206,8 +206,25 @@ def normalize_listing(raw):
 # ---------------------------------------------------------------- core
 
 def load_payload(path):
+    """Load one raw map.json payload, or a combined {"captures": [...]} file
+    from tools/rf_console_capture.js -- one rfDownload() can hold dozens of
+    sub-captures from a single pan/zoom session. For the combined shape,
+    listings are pooled across every sub-capture; total is the largest single
+    sub-capture total seen (consistent with how ingest_snapshot then takes the
+    max across files); cities is the last non-empty cities list seen, matching
+    the existing last-file-wins merge in ingest_snapshot's outer loop."""
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if isinstance(data, dict) and isinstance(data.get("captures"), list):
+        listings, total, cities = [], None, []
+        for payload in data["captures"]:
+            listings.extend(payload.get("listings") or [])
+            t = payload.get("total")
+            if t and (total is None or t > total):
+                total = t
+            if payload.get("cities"):
+                cities = payload["cities"]
+        return listings, total, cities
     listings = data.get("listings", data if isinstance(data, list) else [])
     total = data.get("total")
     cities = data.get("cities") or []  # metro-wide totals, independent of capture coverage
