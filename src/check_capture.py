@@ -33,11 +33,20 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-# Documented per-response server cap. 'search.max' claims 800; it lies.
+# Documented per-response server cap, in PROPERTY rows. 'search.max' claims 800;
+# it lies. Note this cap is on properties returned, not on suite types ('total').
 HARD_CAP = 500
-# Draw smaller than this and a re-draw is never needed; between here and the cap
-# is the ambiguous zone where 500-vs-500 can't be distinguished from truncation.
-SAFE_TOTAL = 450
+# Stay under this many properties and a re-draw is never needed; between here and
+# the cap is the ambiguous zone where 500-vs-500 can't be told from truncation.
+SAFE_PROPERTIES = 450
+
+
+def _units_of(listing):
+    """Suite types advertised by one property listing. Absent/garbage -> 1."""
+    try:
+        return int(listing.get("units"))
+    except (TypeError, ValueError):
+        return 1
 
 EXPECTED_TYPES = {"Apartment", "Townhouse", "Fourplex"}
 BANNED_TYPES = {"Condo Unit"}
@@ -58,31 +67,39 @@ def _analyze_payload(data, label):
 
     total = data.get("total")
     total2 = data.get("total2")
-    # total2 tracks the actual listings array when the two diverge (confirmed
-    # 2026-08-10); total appears to count a wider area than the drawn/visible shape.
-    effective_total = min([t for t in (total, total2) if t is not None], default=None)
+
+    # 'total' counts SUITE TYPES in view, not property listings -- confirmed
+    # 2026-08-14 across 169/173 captures where sum(units) == total exactly (the
+    # 4 exceptions are precisely the 500-property-cap truncations), plus an
+    # independent location-search check (457 properties, sum(units) = 628 = total).
+    # 'total2' is inconsistent: it equals the property count on draw-tool captures
+    # but repeats the suite-type total on plain zoom/pan captures, so it is NOT a
+    # reliable completeness reference. Compare suite types returned against 'total'.
+    suite_types = sum(_units_of(x) for x in listings)
 
     search = data.get("search") or {}
     active_types = set(search.get("type") or [])
 
     problems, notes = [], []
 
-    # ---- truncation
+    # ---- truncation. The server cap is on PROPERTY rows returned (500), while
+    # 'total' is denominated in suite types -- comparing the two directly is a
+    # units mismatch and was the source of spurious "SHORT" warnings.
     if n >= HARD_CAP:
         problems.append(
-            f"AT CAP: {n} listings returned (cap {HARD_CAP}). This capture is "
+            f"AT CAP: {n} property listings returned (cap {HARD_CAP}). This capture is "
             f"almost certainly truncated -- narrow the area/filter and split in two."
         )
-    elif effective_total and effective_total > SAFE_TOTAL:
+    elif n > SAFE_PROPERTIES:
         problems.append(
-            f"NEAR CAP: effective total {effective_total} is within {HARD_CAP - SAFE_TOTAL} "
-            f"of the cap. Narrow it for headroom."
+            f"NEAR CAP: {n} property listings is within {HARD_CAP - SAFE_PROPERTIES} "
+            f"of the {HARD_CAP} cap. Narrow it for headroom."
         )
 
-    if effective_total is not None and n < effective_total:
+    if total is not None and suite_types < total:
         problems.append(
-            f"SHORT: got {n} listings but the view reports {effective_total}. "
-            f"{effective_total - n} missing."
+            f"SHORT: returned {n} properties covering {suite_types} suite types, but the "
+            f"view reports {total}. {total - suite_types} suite types missing."
         )
 
     if n_unique != n:
@@ -115,9 +132,9 @@ def _analyze_payload(data, label):
 
     # ---- report
     print(f"\n=== {label} ===")
-    print(f"listings: {n} ({n_unique} unique) | cap {HARD_CAP} | "
+    print(f"properties: {n} ({n_unique} unique) | cap {HARD_CAP} | "
           f"headroom {HARD_CAP - n}")
-    print(f"total: {total} | total2: {total2} | effective: {effective_total}")
+    print(f"suite types returned: {suite_types} | total (suite types in view): {total} | total2: {total2}")
     print(f"filter: {', '.join(sorted(active_types)) or '(none reported)'}")
     print(f"types seen: {dict(by_type)}")
     print(f"cities: {dict(by_city)}")
@@ -135,7 +152,7 @@ def _analyze_payload(data, label):
 
     return {
         "file": label, "n": n, "n_unique": n_unique, "ids": set(ids),
-        "total": total, "total2": total2, "effective_total": effective_total,
+        "total": total, "total2": total2, "suite_types": suite_types,
         "active_types": active_types, "by_city": by_city, "by_type": by_type,
         "bbox": bbox, "problems": problems, "notes": notes,
     }

@@ -231,8 +231,16 @@ def load_payload(path):
     return listings, total, cities
 
 def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
-                    metro_city_ids=(2, 43, 33, 34, 39, 31, 36)):
-    """Merge one or more map.json files into one snapshot, dedupe, append to store."""
+                    metro_city_ids=(2, 43, 33, 34, 39, 31, 36, 35),
+                    site_suite_types=None):
+    """Merge one or more map.json files into one snapshot, dedupe, append to store.
+
+    site_suite_types: the number shown by the site's own "Results (N)" badge on
+    the filtered location-search page. This is the only trustworthy coverage
+    denominator -- it is city-wide rather than viewport-bound, and it is
+    denominated in suite types, matching what this function now counts. Pass it
+    whenever you have it; without it, coverage is reported against the largest
+    single captured view, which is a floor, not a real ceiling."""
     snapshot_date = snapshot_date or date.today().isoformat()
     data_dir = Path(data_dir); data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -257,13 +265,27 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     # sortable directly rather than requiring a pivot table in Excel.
     df["user_listings_in_snapshot"] = df.groupby("user_id")["listing_id"].transform("count")
 
-    claimed_total = max([t for t in totals if t], default=None)
-    coverage = round(n_unique / claimed_total, 3) if claimed_total else None
+    # Coverage is measured in SUITE TYPES, not property rows (confirmed
+    # 2026-08-14): map.json's 'total' counts suite types, and so does the site's
+    # own "Results (N)" badge, while each row here is one property ad carrying an
+    # n_suite_types count. Comparing rows against 'total' is a units mismatch --
+    # it is what made this metric read ~48% when real coverage was ~97%.
+    #
+    # Note the denominator is still only a floor for section/pan captures: it is
+    # the largest single view's suite-type total, and no single view necessarily
+    # covers the whole city. The trustworthy denominator is the site's filtered
+    # "Results (N)" counter, read manually on the location-search page and passed
+    # in as site_suite_types.
+    n_suite_types = int(df["n_suite_types"].fillna(1).sum())
+    claimed_total = site_suite_types or max([t for t in totals if t], default=None)
+    coverage = round(n_suite_types / claimed_total, 3) if claimed_total else None
+    basis = "site Results counter" if site_suite_types else "largest single view (floor only)"
     print(f"[{snapshot_date}] files={len(payload_files)} raw_rows={n_raw} "
-          f"unique={n_unique} site_total={claimed_total} coverage={coverage}")
-    if coverage and coverage < 0.9:
-        print("  WARNING: coverage <90% of site total. Capture more zoomed-in "
-              "quadrant payloads and re-run this snapshot.")
+          f"properties={n_unique} suite_types={n_suite_types} "
+          f"site_total={claimed_total} coverage={coverage} ({basis})")
+    if coverage and coverage < 0.9 and site_suite_types:
+        print("  WARNING: coverage <90% of the site's own filtered Results count. "
+              "Capture more areas and re-run this snapshot.")
 
     # ---- append to snapshots (idempotent per snapshot_date)
     snap_path = data_dir / "snapshots.parquet"
