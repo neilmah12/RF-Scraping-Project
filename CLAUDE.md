@@ -70,6 +70,37 @@ capture must still originate from Neil manually panning/zooming/drawing on the
 map in a real browser session. Nothing may issue its own requests to
 Rentfaster or drive the map without him.
 
+### Listing-detail capture (tools/rf_detail_capture.js, added 2026-08-18)
+
+Companion to the map hook, for browsing individual listing pages. Same rule:
+it never fetches anything itself, it only keeps what the browser already
+loaded while Neil clicks through listings manually.
+
+Runs in **discovery mode** because the detail schema is still undocumented
+(open question 5). Rather than matching a known shape it keeps anything
+plausibly listing-related and reports the structure back via `rfdInspect(n)`,
+which prints keys and types rather than values. Once a real capture exists the
+schema goes in Section 4 and the filter can be narrowed.
+
+Two things it does that the map hook does not, both necessary here:
+
+- **Scans inline JSON in the loaded document**, not just fetch/XHR. If the
+  detail page is server-rendered the payload never crosses the network hooks —
+  it arrives inside the HTML. Reads the DOM the browser already parsed; issues
+  no request.
+- **Persists captures to localStorage**, because clicking between listings is a
+  navigation and a full page load wipes in-memory state. The map hook lives on
+  one page and never had this problem.
+
+`rfdStatus()` / `rfdInspect(n)` / `rfdDownload()` / `rfdClear()`. Verified in a
+Node harness: inline and network payloads both captured, re-pasting swaps hooks
+without double-wrapping (native fetch called once per request), captures
+survive across page loads, listing id parsed from the URL slug.
+
+The best time to run it is during match review — the listings being verified
+are the ones worth having detail for, so the data comes as a byproduct of work
+already being done.
+
 ### Console capture helper (tools/rf_console_capture.js, added 2026-08-11)
 
 Removes the manual "open Network tab, find the map.json request, Save
