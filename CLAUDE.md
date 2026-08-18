@@ -70,7 +70,71 @@ capture must still originate from Neil manually panning/zooming/drawing on the
 map in a real browser session. Nothing may issue its own requests to
 Rentfaster or drive the map without him.
 
-### Listing-detail capture (tools/rf_detail_capture.js, added 2026-08-18)
+### Listing-detail schema (DOCUMENTED 2026-08-18 — closes open question 5)
+
+Rentfaster detail pages are **server-rendered with schema.org JSON-LD**, not a
+JSON API. The payload never crosses fetch/XHR — it arrives inside the HTML:
+
+    <script type="application/ld+json">
+      {"@type":"ItemPage","mainEntity":{"@type":["LocalBusiness","ApartmentComplex"], ...}}
+
+`mainEntity` carries:
+
+| Field | Notes |
+|---|---|
+| `name` | building name, or the street address when the building is unnamed |
+| `slogan` | often the building name, sometimes a promo line |
+| `parentOrganization` | the property **MANAGER**, not necessarily the owner. Boardwalk and Mainstreet manage what they own; Zen Residential manages a building owned by an individual. Has `telephone`, `url` |
+| `address` | `streetAddress`, `addressLocality`, `addressRegion`, **`postalCode`** |
+| `geo` | latitude, longitude |
+| `amenityFeature[]` | 13–18 structured amenities per listing |
+| **`containsPlace[]`** | **one entry per advertised suite type** |
+| | `numberOfBedrooms`, `numberOfFullBathrooms`, `numberOfPartialBathrooms` |
+| | `potentialAction.price` — **rent for that suite type** |
+| | `floorSize.value` — **SQUARE FEET** |
+| | `additionalProperty` — Availability Date, Utilities Included |
+| `priceRange`, `telephone`, `image`, `petsAllowed`, `description` | |
+
+What this closes:
+
+- **`blended` and `inferred` rent confidence.** map.json gives a range with no
+  way to map price to bed count. `containsPlace` states it outright.
+- **Square footage**, the largest gap in the proforma inputs (FileMaker suite
+  sizes 8–19%, CoStar `Average Unit SF` 28% and dropped). Present on 4 of 5
+  suites in the first sample, tied to a bed count and a rent.
+- **Utilities Included**, which decides whether a quoted rent is net or gross.
+- **Property manager**, corroborating Inventory's Owner Company on 3 of 4.
+
+Caveats, from the first 4 captures:
+
+- `containsPlace` is what is **currently advertised**, not the building's suite
+  mix. One listing showed a single 1-bed while its own description mentioned
+  bachelor, 1 and 2 bedroom options. It is a rent observation, not a rent roll.
+- Rents move between captures. Two of four disagreed with the 2026-08-11 map
+  capture taken 7 days earlier ($1,339 → $1,309; $1,099–1,250 → $999). Detail
+  captures need their own capture date rather than being folded into the map
+  snapshot.
+- Sample is 4 listings. The schema is a published standard so it should be
+  stable, but the field *population* rates are not yet known.
+
+### Listing-detail capture (two versions, added 2026-08-18)
+
+**`tools/rf_detail_capture.user.js`** — Tampermonkey/Violentmonkey userscript,
+the one to use for volume. Runs itself on every listing page opened, so
+clicking links out of the match review workbook just works. Dedupes on
+listing id, shows a badge with the running count, click to download. Needed
+because opening a listing is a navigation and page memory dies each time, so
+the console version would have to be re-pasted on all ~800 review rows.
+
+**`tools/rf_detail_capture.js`** — console version, discovery mode. Still
+useful for a one-off, and for re-running discovery if the page structure
+changes. It is what documented the schema above: it scans inline JSON as well
+as fetch/XHR, which is why it found the payload at all.
+
+Neither fetches anything. Every page is one Neil opened himself; both only read
+a document the browser already parsed.
+
+#### Console version, discovery notes
 
 Companion to the map hook, for browsing individual listing pages. Same rule:
 it never fetches anything itself, it only keeps what the browser already
@@ -456,7 +520,7 @@ rf_data/
 2. Metro addresses outside Edmonton proper in Inventory: handle now or defer?
 3. Proforma template: Neil to provide format when step 6 starts.
 4. `f` field interpretation: confirm against more payloads.
-5. Detail-page JSON schema: document when first captured.
+5. ~~Detail-page JSON schema~~ **ANSWERED 2026-08-18** — schema.org JSON-LD, documented in Section 4. Field population rates across a larger sample are still unknown.
 6. Suite mix gaps (~3,100 buildings): manual fill prioritization TBD.
 7. Listing ID stability on dormancy/reactivation: unknown whether a listing_id
    persists when a unit goes quiet and is re-listed later, or whether Rentfaster
