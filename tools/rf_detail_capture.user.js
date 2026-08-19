@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.2
+// @version      1.3
 // @description  Keeps the schema.org listing data your browser already loaded, while you browse Rentfaster listings by hand. Issues no requests of its own.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -171,18 +171,64 @@
     var raw = lines.join('\n');
     if (raw.length > 4000) raw = raw.slice(0, 4000);
 
-    var promos = [], current = null;
-    lines.forEach(function (line) {
-      if (/^\*/.test(line)) return;                       // the landlord disclaimer
+    // Bound the parse to the promotions block itself: from the "Promotions"
+    // heading to the landlord disclaimer or the next section. The container
+    // walk lands on an ancestor that still spans the page header and Floor
+    // Plans, so scoping by container alone is not enough.
+    var start = lines.indexOf('Promotions');
+    var slice = start === -1 ? lines : lines.slice(start + 1);
+    var stop = slice.length;
+    for (var s2 = 0; s2 < slice.length; s2++) {
+      if (/^\*/.test(slice[s2]) || /^(Floor Plans|Similar Listings|Description)$/i.test(slice[s2])) {
+        stop = s2;
+        break;
+      }
+    }
+    slice = slice.slice(0, stop);
+
+    var promos = [], current = null, pendingLabel = null;
+    slice.forEach(function (line) {
       var m = line.match(TYPES);
       if (m && line.length < 40) {
         current = { type: m[1], headline: '', body: [], fields: {} };
         promos.push(current);
+        pendingLabel = null;
         return;
       }
       if (!current) return;
-      var kv = line.match(/^([A-Za-z ]{3,20})\s*:\s*(.+)$/);
-      if (kv) { current.fields[kv[1].trim()] = kv[2].trim(); return; }
+      // Skip bare URLs before anything else -- otherwise one gets swallowed
+      // as a continuation of the preceding label, e.g. Valid becoming
+      // "Jun 03, 2026 - Sep 01, 2026 - https://...".
+      if (/^https?:\/\//i.test(line) || /^www\./i.test(line)) { pendingLabel = null; return; }
+
+      // A label can sit on its own line with its value on the next -- e.g.
+      // "Valid :" then "Aug 18, 2026" then "Sep 01, 2026". Collect those.
+      if (pendingLabel) {
+        if (/^[A-Za-z ]{3,20}\s*:?$/.test(line) && /:$/.test(line)) {
+          pendingLabel = line.replace(/\s*:\s*$/, '').trim();
+          return;
+        }
+        // Values are short (dates, amounts, terms). Anything long is prose,
+        // so stop collecting rather than gluing a paragraph onto the label.
+        if (line.length > 60) { pendingLabel = null; }
+        else {
+          var have = current.fields[pendingLabel];
+          current.fields[pendingLabel] = have ? have + ' - ' + line : line;
+          return;
+        }
+      }
+      if (/^[A-Za-z ]{3,20}\s*:\s*$/.test(line)) {
+        pendingLabel = line.replace(/\s*:\s*$/, '').trim();
+        return;
+      }
+
+      // Inline "Label: value", but not a URL -- "https://..." was being
+      // stored as a field named "https".
+      var kv = line.match(/^([A-Za-z][A-Za-z ]{2,19})\s*:\s*(.+)$/);
+      if (kv && !/^https?$/i.test(kv[1].trim())) {
+        current.fields[kv[1].trim()] = kv[2].trim();
+        return;
+      }
       if (!current.headline) current.headline = line;
       else current.body.push(line);
     });

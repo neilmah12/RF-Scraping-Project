@@ -59,8 +59,9 @@ LISTING_FIELDS = [
     "longitude", "price_range", "phone", "pets_allowed", "smoking_allowed",
     "n_suite_types", "n_amenities", "amenities",
     "incentive_detected", "incentive_kinds", "incentive_snippet",
-    "promo_count", "promo_types", "promo_headlines", "promo_discount",
-    "promo_discount_amount", "promo_lease_length", "promo_valid",
+    "promo_count", "promo_types", "promo_headlines", "promo_body",
+    "promo_discount", "promo_discount_amount", "promo_lease_length",
+    "promo_valid", "promo_other_fields",
     "parking_types", "parking_rate_monthly", "parking_rate_text",
     "description", "promo_raw", "image", "url", "canonical_url",
 ]
@@ -130,9 +131,9 @@ def find_incentives(*texts) -> tuple[list[str], str]:
 #
 # Captures made before v1.1 have no `promotions` key and fall back to the
 # text heuristic, which is weaker -- it missed the G17 discount entirely.
-PROMO_FIELDS = ["promo_count", "promo_types", "promo_headlines",
+PROMO_FIELDS = ["promo_count", "promo_types", "promo_headlines", "promo_body",
                 "promo_discount", "promo_discount_amount", "promo_lease_length",
-                "promo_valid", "promo_raw"]
+                "promo_valid", "promo_other_fields", "promo_raw"]
 
 
 def flatten_promotions(promotions) -> dict:
@@ -145,7 +146,7 @@ def flatten_promotions(promotions) -> dict:
         return blank
 
     promos = promotions["promos"]
-    discounts, amounts, lease, valid = [], [], [], []
+    discounts, amounts, lease, valid, other = [], [], [], [], []
     for promo in promos:
         fields = promo.get("fields") or {}
         for key, value in fields.items():
@@ -162,15 +163,19 @@ def flatten_promotions(promotions) -> dict:
                 lease.append(value)
             elif "valid" in low:
                 valid.append(f"{key}: {value}")
+            elif low not in ("https", "http"):
+                other.append(f"{key}: {value}")
 
     return {
         "promo_count": len(promos),
         "promo_types": "|".join(p.get("type", "") for p in promos),
         "promo_headlines": " | ".join(p.get("headline", "") for p in promos if p.get("headline")),
+        "promo_body": " | ".join(p.get("body", "") for p in promos if p.get("body")),
         "promo_discount": " | ".join(discounts),
         "promo_discount_amount": max(amounts) if amounts else "",
         "promo_lease_length": " | ".join(lease),
         "promo_valid": " | ".join(valid),
+        "promo_other_fields": " | ".join(other),
         "promo_raw": promotions.get("raw", ""),
     }
 
