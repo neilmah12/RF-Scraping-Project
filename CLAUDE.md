@@ -140,6 +140,20 @@ Two consequences:
 All 21 address-matched an Inventory building. Manager matched Owner Company on
 11 of 15 comparable.
 
+**Incentives in free text — the structured flag is incomplete.** `promotions`
+in map.json is a tag list: it says *that* an incentive exists, never its terms,
+and it misses incentives typed into the ad copy rather than the promotions box.
+On the 21-listing sample, **2 advertise an incentive in the text that map.json
+does not flag** ("Get up to 2 months free", "1 MONTH FREE RENT PLUS FREE
+INTERNET & CABLE"), while 7 carry the flag with no matching text. The two
+signals are **complementary, not redundant** — use both, trust neither alone.
+
+Terms matter for underwriting: two months free is roughly a 16% effective
+discount, $500 off is nearer 3%. `parse_rf_detail.py` writes the **full
+description verbatim** plus heuristic `incentive_detected` / `incentive_kinds`
+/ `incentive_snippet` columns, so the rules can be improved and re-run later
+without recapturing anything.
+
 ### Listing-detail capture (two versions, added 2026-08-18)
 
 **`tools/rf_detail_capture.user.js`** — Tampermonkey/Violentmonkey userscript,

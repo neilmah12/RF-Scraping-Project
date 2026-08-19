@@ -9,7 +9,7 @@ recent by capture timestamp.
 
 Output
 ------
-`rf_detail_listings.csv`  one row per listing
+`rf_detail_listings.csv`  one row per listing, including the FULL description
 `rf_detail_suites.csv`    one row per advertised suite type  <- the useful one
 
 Why the suite file matters (measured on the 2026-08-19 sample, 21 listings /
@@ -40,6 +40,9 @@ Caveats carried into the output
   the misses include a building Zen Residential manages for an individual.
 - Rents move between captures, so `capture_date` is carried on every row and
   must not be folded into a map.json snapshot date.
+- `incentive_detected` is a heuristic over the ad copy, not ground truth. The
+  full `description` is written out verbatim so the rules can be improved and
+  re-run later without recapturing anything.
 """
 from __future__ import annotations
 
@@ -52,15 +55,62 @@ import re
 LISTING_FIELDS = [
     "listing_id", "capture_date", "name", "slogan", "manager", "manager_phone",
     "manager_url", "street_address", "locality", "postal_code", "latitude",
-    "longitude", "price_range", "phone", "pets_allowed", "n_suite_types",
-    "n_amenities", "amenities", "image", "url",
+    "longitude", "price_range", "phone", "pets_allowed", "smoking_allowed",
+    "n_suite_types", "n_amenities", "amenities",
+    "incentive_detected", "incentive_kinds", "incentive_snippet",
+    "description", "image", "url", "canonical_url",
 ]
 SUITE_FIELDS = [
     "listing_id", "capture_date", "name", "street_address", "postal_code",
     "latitude", "longitude", "manager", "suite_index", "beds", "baths_full",
     "baths_partial", "rent", "sqft", "rent_per_sqft", "availability",
-    "utilities_included", "suite_label", "url",
+    "utilities_included", "suite_label", "suite_description",
+    "incentive_detected", "incentive_kinds", "url",
 ]
+
+
+# --- incentive extraction ---------------------------------------------------
+# map.json's `promotions` is a tag list only -- it flags THAT an incentive
+# exists, never its terms, and it misses incentives written into the ad copy
+# rather than entered in the promotions box. Measured on the 2026-08-19 sample:
+# 2 of 21 listings advertise an incentive in the text that the structured flag
+# does not catch ("Get up to 2 months free", "1 MONTH FREE RENT PLUS FREE
+# INTERNET & CABLE"). Seven carried the flag with no matching text.
+#
+# So the two signals are COMPLEMENTARY, not redundant -- use both, and treat
+# neither as complete. Terms matter for a proforma: two months free is roughly
+# a 16% effective discount, $500 off is nearer 3%.
+#
+# These patterns are a convenience layer. The full `description` is written out
+# verbatim so any of this can be re-derived later with better rules, without
+# recapturing anything.
+INCENTIVE_PATTERNS = {
+    "months free": r"\b(\d+|one|two|half|1/2)\s*(month|months|mo)\b[^.]{0,30}\bfree\b"
+                   r"|\bfree\b[^.]{0,20}\b(month|months)\b",
+    "dollars off": r"\$\s?\d[\d,]*\s*(off|discount|credit|rebate|cash back)"
+                   r"|\b(save|discount of)\b\s*\$\s?\d",
+    "reduced deposit": r"\b(deposit)\b[^.]{0,40}\$\s?\d|\$\s?\d[\d,]*\s*(security\s*)?deposit"
+                       r"|\breduced\b[^.]{0,15}\bdeposit\b",
+    "gift card": r"\bgift\s*card\b|\bvisa\s*card\b",
+    "free parking or utilities": r"\bfree\b[^.]{0,20}\b(parking|internet|wifi|cable|utilit)",
+    "promo or special": r"\b(promo|promotion|special offer|limited time|move[- ]in bonus|incentive)\b",
+}
+
+
+def find_incentives(*texts) -> tuple[list[str], str]:
+    """Which incentive patterns fire, plus a snippet of the first match."""
+    blob = " ".join(str(t or "") for t in texts)
+    lowered = blob.lower()
+    kinds, snippet = [], ""
+    for label, pattern in INCENTIVE_PATTERNS.items():
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+        kinds.append(label)
+        if not snippet:
+            start = max(0, match.start() - 50)
+            snippet = " ".join(blob[start:match.end() + 60].split())
+    return kinds, snippet
 
 
 def load(paths: list[str]) -> dict[str, dict]:
@@ -104,6 +154,7 @@ def rows(captures: dict[str, dict]):
         amenities = [a.get("name") for a in (entity.get("amenityFeature") or []) if a.get("name")]
         places = entity.get("containsPlace") or []
         date = (capture.get("ts") or "")[:10]
+        kinds, snippet = find_incentives(entity.get("slogan"), entity.get("description"))
 
         listings.append({
             "listing_id": listing_id, "capture_date": date,
@@ -116,9 +167,14 @@ def rows(captures: dict[str, dict]):
             "latitude": geo.get("latitude"), "longitude": geo.get("longitude"),
             "price_range": entity.get("priceRange"), "phone": entity.get("telephone"),
             "pets_allowed": entity.get("petsAllowed"),
+            "smoking_allowed": entity.get("smokingAllowed"),
             "n_suite_types": len(places), "n_amenities": len(amenities),
-            "amenities": "|".join(amenities), "image": entity.get("image"),
-            "url": capture.get("url"),
+            "amenities": "|".join(amenities),
+            "incentive_detected": "Y" if kinds else "N",
+            "incentive_kinds": "|".join(kinds), "incentive_snippet": snippet,
+            "description": entity.get("description"),
+            "image": entity.get("image"), "url": capture.get("url"),
+            "canonical_url": entity.get("url"),
         })
 
         for i, place in enumerate(places, start=1):
@@ -139,7 +195,11 @@ def rows(captures: dict[str, dict]):
                 "rent_per_sqft": round(rent / sqft, 3) if rent and sqft else None,
                 "availability": props.get("Availability Date"),
                 "utilities_included": props.get("Utilities Included"),
-                "suite_label": place.get("name"), "url": capture.get("url"),
+                "suite_label": place.get("name"),
+                "suite_description": place.get("description"),
+                "incentive_detected": "Y" if kinds else "N",
+                "incentive_kinds": "|".join(kinds),
+                "url": capture.get("url"),
             })
     return listings, suites
 
@@ -168,7 +228,9 @@ def main():
 
     with_sqft = sum(1 for s in suites if s["sqft"])
     with_utils = sum(1 for s in suites if s["utilities_included"])
+    with_incentive = sum(1 for l in listings if l["incentive_detected"] == "Y")
     print(f"{len(listings)} listings, {len(suites)} suite types")
+    print(f"  incentive in text  {with_incentive}/{len(listings)}")
     if suites:
         print(f"  square feet        {with_sqft}/{len(suites)} ({100*with_sqft/len(suites):.0f}%)")
         print(f"  utilities included {with_utils}/{len(suites)} ({100*with_utils/len(suites):.0f}%)")
