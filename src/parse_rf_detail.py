@@ -68,7 +68,7 @@ SUITE_FIELDS = [
     "listing_id", "capture_date", "name", "street_address", "postal_code",
     "latitude", "longitude", "manager", "suite_index", "beds", "baths_full",
     "baths_partial", "rent", "sqft", "rent_per_sqft", "availability",
-    "utilities_included", "suite_label", "suite_description",
+    "utilities_included", "unit_number", "suite_label", "suite_description",
     "incentive_detected", "incentive_kinds", "url",
 ]
 
@@ -339,6 +339,11 @@ def rows(captures: dict[str, dict]):
                 "rent_per_sqft": round(rent / sqft, 3) if rent and sqft else None,
                 "availability": props.get("Availability Date"),
                 "utilities_included": props.get("Utilities Included"),
+                # containsPlace `name` is sometimes "Unit 785-205" and
+                # sometimes "1 bed, 1 bath, $999" -- the unit number is only
+                # present on listings that advertise individual units.
+                "unit_number": (re.match(r"\s*Unit\s+(\S+)", str(place.get("name") or ""))
+                                or [None, ""])[1] if re.match(r"\s*Unit\s+", str(place.get("name") or "")) else "",
                 "suite_label": place.get("name"),
                 "suite_description": place.get("description"),
                 "incentive_detected": "Y" if kinds else "N",

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.1
+// @version      1.2
 // @description  Keeps the schema.org listing data your browser already loaded, while you browse Rentfaster listings by hand. Issues no requests of its own.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -125,29 +125,55 @@
   // labelled prose is brittle and the layout may change; keeping the raw means
   // a bad parse can be corrected later without recapturing.
   function readPromotions() {
+    // Find the "Promotions" heading.
     var heading = null;
-    var all = document.querySelectorAll('h1,h2,h3,h4,h5,div,section,span');
-    for (var i = 0; i < all.length; i++) {
-      var t = (all[i].textContent || '').trim();
-      if (t.toLowerCase() === 'promotions' && t.length < 20) { heading = all[i]; break; }
+    var nodes = document.querySelectorAll('h1,h2,h3,h4,h5,div,section,span,p');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = (nodes[i].textContent || '').trim();
+      if (t.toLowerCase() === 'promotions' && t.length < 20) { heading = nodes[i]; break; }
     }
     if (!heading) return null;
 
-    // Walk up until we find a container that holds more than just the heading.
+    // Walk up only until the container also holds a promo TYPE label. v1.1
+    // walked up on text length alone and swallowed the whole page, so Floor
+    // Plans fields (Deposit, Unit Number) were mis-read as promo fields.
+    var TYPES = /(Rent Special|Promo Available|Move[- ]?in Gift|Other Promotion)/i;
     var box = heading.parentElement, guard = 0;
-    while (box && box.textContent.trim().length < 60 && guard++ < 6) box = box.parentElement;
+    while (box && guard++ < 8) {
+      if (TYPES.test(box.textContent || '')) break;
+      box = box.parentElement;
+    }
     if (!box) return null;
 
-    var raw = box.innerText || box.textContent || '';
-    raw = raw.replace(/\u00a0/g, ' ').split('\n').map(function (l) { return l.trim(); })
-             .filter(Boolean).join('\n');
+    // Read with textContent, NOT innerText. innerText skips CSS-hidden
+    // elements, and these accordions are collapsed by default -- which is why
+    // v1.1 captured only the type labels and none of the discount, lease
+    // length or validity fields. textContent includes hidden nodes.
+    var parts = [];
+    (function walk(node, depth) {
+      if (!node || depth > 14 || parts.length > 400) return;
+      var kids = node.children || [];
+      if (!kids.length) {
+        var leaf = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (leaf) parts.push(leaf);
+        return;
+      }
+      for (var i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
+    })(box, 0);
+
+    var seen = {}, lines = [];
+    parts.forEach(function (line) {
+      if (line.length > 400) line = line.slice(0, 400);
+      if (seen[line]) return;          // the walk can surface a value twice
+      seen[line] = 1;
+      lines.push(line);
+    });
+    var raw = lines.join('\n');
     if (raw.length > 4000) raw = raw.slice(0, 4000);
 
-    // Split into promo blocks on the known type labels.
-    var TYPES = /(Rent Special|Promo Available|Move[- ]?in Gift|Other Promotion)/i;
-    var lines = raw.split('\n');
     var promos = [], current = null;
     lines.forEach(function (line) {
+      if (/^\*/.test(line)) return;                       // the landlord disclaimer
       var m = line.match(TYPES);
       if (m && line.length < 40) {
         current = { type: m[1], headline: '', body: [], fields: {} };
@@ -162,7 +188,13 @@
     });
     promos.forEach(function (p) { p.body = p.body.join(' '); });
 
-    return { raw: raw, promos: promos };
+    // Bounded markup snapshot, so a wrong parse can be diagnosed offline
+    // instead of costing another round of captures. Two guesses at this
+    // structure have been wrong already.
+    var html = '';
+    try { html = (box.outerHTML || '').slice(0, 6000); } catch (e) {}
+
+    return { raw: raw, promos: promos, html: html };
   }
 
   function capture() {
