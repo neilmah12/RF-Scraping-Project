@@ -9,7 +9,8 @@ recent by capture timestamp.
 
 Output
 ------
-`rf_detail_listings.csv`  one row per listing, including the FULL description
+`rf_detail_listings.csv`  one row per listing, the FULL description, and
+                          incentive + parking fields derived from it
 `rf_detail_suites.csv`    one row per advertised suite type  <- the useful one
 
 Why the suite file matters (measured on the 2026-08-19 sample, 21 listings /
@@ -58,6 +59,7 @@ LISTING_FIELDS = [
     "longitude", "price_range", "phone", "pets_allowed", "smoking_allowed",
     "n_suite_types", "n_amenities", "amenities",
     "incentive_detected", "incentive_kinds", "incentive_snippet",
+    "parking_types", "parking_rate_monthly", "parking_rate_text",
     "description", "image", "url", "canonical_url",
 ]
 SUITE_FIELDS = [
@@ -113,6 +115,82 @@ def find_incentives(*texts) -> tuple[list[str], str]:
     return kinds, snippet
 
 
+# --- parking ----------------------------------------------------------------
+# Parking is almost entirely absent from the structured payload: on the
+# 2026-08-19 sample only 1 of 21 listings carried a parking amenity tag
+# ("Guest Parking"), while 14 described parking in the ad copy. Rates appear
+# only in the text -- 3 of 21 quoted one, ranging from $10/mth for an outdoor
+# stall to $195/mth underground.
+#
+# That range is material. Inventory already holds Parking Type at 43% and
+# stall counts at 49%, but carries NO rate field anywhere, so this is the only
+# source for it. On a 100-stall building the difference between $10 and $195
+# is roughly $220k of annual revenue.
+#
+# Type is extracted as a cross-check on Inventory's Parking Type rather than a
+# replacement -- Inventory's is the more reliable of the two when present.
+PARKING_WORD = r"(?:parking|parkade|stall|garage|carport)"
+PARKING_TYPES = {
+    "underground": r"\bunderground\b|\bparkade\b",
+    "surface": r"\b(surface|outdoor|open)\b",
+    "covered": r"\bcovered\b",
+    "heated": r"\bheated\b",
+    "energized": r"\b(energized|plug[- ]?in)\b",
+    "garage": r"\bgarage\b",
+    "tandem": r"\btandem\b",
+    "assigned": r"\b(assigned|titled)\b",
+}
+_RATE = re.compile(
+    r"[^.\n]{0,90}\$\s?\d[\d,.]*\s*(?:/|per\s*)?\s*(?:mth|month|mo\b)[^.\n]{0,45}",
+    re.I,
+)
+
+
+def find_parking(description) -> tuple[str, str, str]:
+    """(types, rate snippet, monthly rate) from the ad copy.
+
+    Every candidate segment must contain an actual parking word, so "nearby
+    parks and trails for outdoor activities" is not read as surface parking --
+    a real false positive in the first pass over this sample.
+    """
+    text = str(description or "")
+    if not text:
+        return "", "", ""
+
+    types = []
+    for label, pattern in PARKING_TYPES.items():
+        for segment in re.finditer(
+            r"[^.\n]{0,70}" + PARKING_WORD + r"[^.\n]{0,70}", text, re.I
+        ):
+            if re.search(pattern, segment.group(0), re.I):
+                types.append(label)
+                break
+
+    snippet, monthly = "", ""
+    for match in _RATE.finditer(text):
+        segment = " ".join(match.group(0).split())
+        if not re.search(PARKING_WORD, segment, re.I):
+            continue
+        snippet = segment[:200]
+        # Pick the amount NEAREST a parking word, not the smallest. A segment
+        # like "Parking, Pets & Storage: Parking is $195 per month" also holds
+        # a $35 pet fee, and taking min() reported the pet fee as the parking
+        # rate on the first pass over this sample.
+        anchors = [m.start() for m in re.finditer(PARKING_WORD, segment, re.I)]
+        best, best_distance = None, None
+        for money in re.finditer(r"\$\s?(\d[\d,.]*)", segment):
+            try:
+                value = float(money.group(1).replace(",", "").rstrip("."))
+            except ValueError:
+                continue
+            distance = min((abs(money.start() - a) for a in anchors), default=10**6)
+            if best_distance is None or distance < best_distance:
+                best, best_distance = value, distance
+        monthly = str(best) if best is not None else ""
+        break
+    return "|".join(types), snippet, monthly
+
+
 def load(paths: list[str]) -> dict[str, dict]:
     """Newest capture per listing id, across any number of download files."""
     newest: dict[str, dict] = {}
@@ -155,6 +233,7 @@ def rows(captures: dict[str, dict]):
         places = entity.get("containsPlace") or []
         date = (capture.get("ts") or "")[:10]
         kinds, snippet = find_incentives(entity.get("slogan"), entity.get("description"))
+        park_types, park_text, park_rate = find_parking(entity.get("description"))
 
         listings.append({
             "listing_id": listing_id, "capture_date": date,
@@ -172,6 +251,8 @@ def rows(captures: dict[str, dict]):
             "amenities": "|".join(amenities),
             "incentive_detected": "Y" if kinds else "N",
             "incentive_kinds": "|".join(kinds), "incentive_snippet": snippet,
+            "parking_types": park_types, "parking_rate_monthly": park_rate,
+            "parking_rate_text": park_text,
             "description": entity.get("description"),
             "image": entity.get("image"), "url": capture.get("url"),
             "canonical_url": entity.get("url"),
@@ -230,7 +311,11 @@ def main():
     with_utils = sum(1 for s in suites if s["utilities_included"])
     with_incentive = sum(1 for l in listings if l["incentive_detected"] == "Y")
     print(f"{len(listings)} listings, {len(suites)} suite types")
+    with_parking = sum(1 for l in listings if l["parking_types"])
+    with_rate = sum(1 for l in listings if l["parking_rate_monthly"])
     print(f"  incentive in text  {with_incentive}/{len(listings)}")
+    print(f"  parking type       {with_parking}/{len(listings)}")
+    print(f"  parking RATE       {with_rate}/{len(listings)}  (no other source has this)")
     if suites:
         print(f"  square feet        {with_sqft}/{len(suites)} ({100*with_sqft/len(suites):.0f}%)")
         print(f"  utilities included {with_utils}/{len(suites)} ({100*with_utils/len(suites):.0f}%)")

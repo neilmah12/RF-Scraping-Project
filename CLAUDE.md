@@ -154,6 +154,27 @@ description verbatim** plus heuristic `incentive_detected` / `incentive_kinds`
 / `incentive_snippet` columns, so the rules can be improved and re-run later
 without recapturing anything.
 
+**Parking lives in the text too, and rates exist nowhere else.** The structured
+payload is nearly silent on parking — 1 of 21 listings carried a parking
+amenity tag ("Guest Parking") while **14 of 21 described parking in the ad
+copy**. Rates appear only there: 3 of 21 quoted one, spanning **$10/mth for an
+outdoor stall to $195/mth underground**.
+
+Inventory already holds `Parking Type` (43%) and `Parking Spaces` (49%), so
+type extracted from the text is a **cross-check**, not a replacement —
+Inventory's is more reliable where present. But Inventory has **no rate field
+at any fill rate**, which makes the listing text the only source for it. On a
+100-stall building that $10-to-$195 spread is roughly $220k of annual revenue,
+so it is materially load-bearing for a proforma rather than a nice-to-have.
+
+`parse_rf_detail.py` writes `parking_types`, `parking_rate_monthly` and
+`parking_rate_text`. Two extraction traps found and fixed on this sample, both
+worth knowing if the rules are ever revised: matching on the bare word "park"
+reads "nearby parks and trails" as surface parking, and taking the smallest
+dollar amount in a segment reported a $35 pet fee as the parking rate for a
+building charging $195. Amounts are now chosen by proximity to a parking word,
+and the raw snippet is always kept so a human can check.
+
 ### Listing-detail capture (two versions, added 2026-08-18)
 
 **`tools/rf_detail_capture.user.js`** — Tampermonkey/Violentmonkey userscript,
