@@ -114,8 +114,31 @@ Caveats, from the first 4 captures:
   capture taken 7 days earlier ($1,339 → $1,309; $1,099–1,250 → $999). Detail
   captures need their own capture date rather than being folded into the map
   snapshot.
-- Sample is 4 listings. The schema is a published standard so it should be
-  stable, but the field *population* rates are not yet known.
+**Field population, measured 2026-08-19 on 21 listings / 103 suite types:**
+
+| Level | Field | Populated |
+|---|---|---|
+| listing | name, slogan, address, postalCode, geo, priceRange, telephone, petsAllowed, description, image, amenityFeature, containsPlace | **100%** |
+| listing | parentOrganization | 90% |
+| suite | bedrooms, bathrooms, rent | **100%** |
+| suite | **floorSize (square feet)** | **98%** |
+| suite | Utilities Included | 75% |
+
+Amenities run 3–30 per listing (median 18). Suites per listing run 1–17.
+
+Two consequences:
+
+- **Square footage is solved for any building with a listing.** 98% here
+  against FileMaker's 8–19% and CoStar's dropped 28%, and it is per suite type
+  tied to a bed count and a rent, so **rent per square foot is computable for
+  the first time**. On that sample: bachelor $2.74, 1-bed $2.64, 2-bed $2.19,
+  3-bed $1.96 — the expected gradient, which is itself a sanity check.
+- **The rent-confidence tiers collapse.** Of the 21, map.json had rated 12
+  `blended` and 5 `inferred`. Every one now has explicit per-suite rent, so
+  all become equivalent to `direct`.
+
+All 21 address-matched an Inventory building. Manager matched Owner Company on
+11 of 15 comparable.
 
 ### Listing-detail capture (two versions, added 2026-08-18)
 
