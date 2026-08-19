@@ -59,8 +59,10 @@ LISTING_FIELDS = [
     "longitude", "price_range", "phone", "pets_allowed", "smoking_allowed",
     "n_suite_types", "n_amenities", "amenities",
     "incentive_detected", "incentive_kinds", "incentive_snippet",
+    "promo_count", "promo_types", "promo_headlines", "promo_discount",
+    "promo_discount_amount", "promo_lease_length", "promo_valid",
     "parking_types", "parking_rate_monthly", "parking_rate_text",
-    "description", "image", "url", "canonical_url",
+    "description", "promo_raw", "image", "url", "canonical_url",
 ]
 SUITE_FIELDS = [
     "listing_id", "capture_date", "name", "street_address", "postal_code",
@@ -89,8 +91,12 @@ SUITE_FIELDS = [
 INCENTIVE_PATTERNS = {
     "months free": r"\b(\d+|one|two|half|1/2)\s*(month|months|mo)\b[^.]{0,30}\bfree\b"
                    r"|\bfree\b[^.]{0,20}\b(month|months)\b",
-    "dollars off": r"\$\s?\d[\d,]*\s*(off|discount|credit|rebate|cash back)"
+    # Allows words between the amount and the keyword. The first version
+    # required them adjacent and so missed "$750 MOVE-IN CREDIT" on G17
+    # Apartments -- a real $750 incentive that never reached the workbook.
+    "dollars off": r"\$\s?\d[\d,.]*[^.\n]{0,25}?\b(off|discount|credit|rebate|cash back)\b"
                    r"|\b(save|discount of)\b\s*\$\s?\d",
+    "free rent period": r"\b(don'?t|do not)\s+pay\s+rent\b|\brent\s+free\b|\bfree\s+rent\b",
     "reduced deposit": r"\b(deposit)\b[^.]{0,40}\$\s?\d|\$\s?\d[\d,]*\s*(security\s*)?deposit"
                        r"|\breduced\b[^.]{0,15}\bdeposit\b",
     "gift card": r"\bgift\s*card\b|\bvisa\s*card\b",
@@ -113,6 +119,60 @@ def find_incentives(*texts) -> tuple[list[str], str]:
             start = max(0, match.start() - 50)
             snippet = " ".join(blob[start:match.end() + 60].split())
     return kinds, snippet
+
+
+# --- promotions (from the rendered page, not the JSON-LD) -------------------
+# The JSON-LD folds promo copy into `description` and drops every structured
+# part. G17 Apartments advertises "Discount: $750.00 off / Lease length: 12
+# months / Valid from: Mar 01, 2026" in a labelled box; none of those labels
+# survive, only a run-on sentence. So `rf_detail_capture.user.js` v1.1 reads
+# the box from the DOM and stores it under a `promotions` key.
+#
+# Captures made before v1.1 have no `promotions` key and fall back to the
+# text heuristic, which is weaker -- it missed the G17 discount entirely.
+PROMO_FIELDS = ["promo_count", "promo_types", "promo_headlines",
+                "promo_discount", "promo_discount_amount", "promo_lease_length",
+                "promo_valid", "promo_raw"]
+
+
+def flatten_promotions(promotions) -> dict:
+    """Promo blocks -> flat columns. Empty dict shape when there are none."""
+    blank = {f: "" for f in PROMO_FIELDS}
+    blank["promo_count"] = 0
+    if not promotions or not promotions.get("promos"):
+        if promotions and promotions.get("raw"):
+            blank["promo_raw"] = promotions["raw"]
+        return blank
+
+    promos = promotions["promos"]
+    discounts, amounts, lease, valid = [], [], [], []
+    for promo in promos:
+        fields = promo.get("fields") or {}
+        for key, value in fields.items():
+            low = key.lower()
+            if "discount" in low:
+                discounts.append(value)
+                found = re.search(r"\$\s?(\d[\d,.]*)", value)
+                if found:
+                    try:
+                        amounts.append(float(found.group(1).replace(",", "").rstrip(".")))
+                    except ValueError:
+                        pass
+            elif "lease" in low:
+                lease.append(value)
+            elif "valid" in low:
+                valid.append(f"{key}: {value}")
+
+    return {
+        "promo_count": len(promos),
+        "promo_types": "|".join(p.get("type", "") for p in promos),
+        "promo_headlines": " | ".join(p.get("headline", "") for p in promos if p.get("headline")),
+        "promo_discount": " | ".join(discounts),
+        "promo_discount_amount": max(amounts) if amounts else "",
+        "promo_lease_length": " | ".join(lease),
+        "promo_valid": " | ".join(valid),
+        "promo_raw": promotions.get("raw", ""),
+    }
 
 
 # --- parking ----------------------------------------------------------------
@@ -234,8 +294,9 @@ def rows(captures: dict[str, dict]):
         date = (capture.get("ts") or "")[:10]
         kinds, snippet = find_incentives(entity.get("slogan"), entity.get("description"))
         park_types, park_text, park_rate = find_parking(entity.get("description"))
+        promo = flatten_promotions(capture.get("promotions"))
 
-        listings.append({
+        row = {
             "listing_id": listing_id, "capture_date": date,
             "name": entity.get("name"), "slogan": entity.get("slogan"),
             "manager": manager.get("name"), "manager_phone": manager.get("telephone"),
@@ -256,7 +317,9 @@ def rows(captures: dict[str, dict]):
             "description": entity.get("description"),
             "image": entity.get("image"), "url": capture.get("url"),
             "canonical_url": entity.get("url"),
-        })
+        }
+        row.update(promo)
+        listings.append(row)
 
         for i, place in enumerate(places, start=1):
             props = _properties(place)
@@ -313,7 +376,9 @@ def main():
     print(f"{len(listings)} listings, {len(suites)} suite types")
     with_parking = sum(1 for l in listings if l["parking_types"])
     with_rate = sum(1 for l in listings if l["parking_rate_monthly"])
-    print(f"  incentive in text  {with_incentive}/{len(listings)}")
+    with_promo_box = sum(1 for l in listings if l["promo_count"])
+    print(f"  promotions box     {with_promo_box}/{len(listings)}  (structured, from the page)")
+    print(f"  incentive in text  {with_incentive}/{len(listings)}  (heuristic fallback)")
     print(f"  parking type       {with_parking}/{len(listings)}")
     print(f"  parking RATE       {with_rate}/{len(listings)}  (no other source has this)")
     if suites:

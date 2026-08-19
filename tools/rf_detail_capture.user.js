@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.0
+// @version      1.1
 // @description  Keeps the schema.org listing data your browser already loaded, while you browse Rentfaster listings by hand. Issues no requests of its own.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -53,6 +53,16 @@
  * bachelor, 1 and 2 bedroom options. Treat it as a rent observation, not a
  * rent roll.
  *
+ * PROMOTIONS (added v1.1)
+ * ----------------------
+ * The JSON-LD folds promo copy into `description` and loses the structured
+ * parts -- the type label, the discount amount, lease length and validity
+ * dates all exist on the page and none reach the JSON-LD. G17 Apartments
+ * advertises "Discount: $750.00 off / Lease length: 12 months / Valid from:
+ * Mar 01, 2026" and the JSON-LD keeps only a run-on sentence. So promotions
+ * are read from the rendered document instead, and stored under a
+ * `promotions` key beside `data`.
+ *
  * INSTALL
  * -------
  * 1. Install Tampermonkey (or Violentmonkey) in your browser.
@@ -95,22 +105,93 @@
     return found;
   }
 
+
+  // --- promotions -----------------------------------------------------------
+  // The JSON-LD concatenates promo copy into `description` and drops the
+  // structured parts. On the page they are separate labelled fields inside a
+  // "Promotions" accordion:
+  //
+  //     Rent Special
+  //       Get up to a $750 MOVE-IN CREDIT!
+  //       Discount: $750.00 off
+  //       Lease length: 12 months
+  //       Valid from : Mar 01, 2026
+  //
+  // Those labels are what a proforma needs and none of them survive into the
+  // JSON-LD, so this reads them from the rendered document. Collapsed
+  // accordions still hold their content in the DOM, so nothing needs clicking.
+  //
+  // The raw section text is always stored alongside the parsed fields. Parsing
+  // labelled prose is brittle and the layout may change; keeping the raw means
+  // a bad parse can be corrected later without recapturing.
+  function readPromotions() {
+    var heading = null;
+    var all = document.querySelectorAll('h1,h2,h3,h4,h5,div,section,span');
+    for (var i = 0; i < all.length; i++) {
+      var t = (all[i].textContent || '').trim();
+      if (t.toLowerCase() === 'promotions' && t.length < 20) { heading = all[i]; break; }
+    }
+    if (!heading) return null;
+
+    // Walk up until we find a container that holds more than just the heading.
+    var box = heading.parentElement, guard = 0;
+    while (box && box.textContent.trim().length < 60 && guard++ < 6) box = box.parentElement;
+    if (!box) return null;
+
+    var raw = box.innerText || box.textContent || '';
+    raw = raw.replace(/\u00a0/g, ' ').split('\n').map(function (l) { return l.trim(); })
+             .filter(Boolean).join('\n');
+    if (raw.length > 4000) raw = raw.slice(0, 4000);
+
+    // Split into promo blocks on the known type labels.
+    var TYPES = /(Rent Special|Promo Available|Move[- ]?in Gift|Other Promotion)/i;
+    var lines = raw.split('\n');
+    var promos = [], current = null;
+    lines.forEach(function (line) {
+      var m = line.match(TYPES);
+      if (m && line.length < 40) {
+        current = { type: m[1], headline: '', body: [], fields: {} };
+        promos.push(current);
+        return;
+      }
+      if (!current) return;
+      var kv = line.match(/^([A-Za-z ]{3,20})\s*:\s*(.+)$/);
+      if (kv) { current.fields[kv[1].trim()] = kv[2].trim(); return; }
+      if (!current.headline) current.headline = line;
+      else current.body.push(line);
+    });
+    promos.forEach(function (p) { p.body = p.body.join(' '); });
+
+    return { raw: raw, promos: promos };
+  }
+
   function capture() {
     var id = listingId();
     if (!id) return 0;
     var list = load();
     if (list.length >= MAX) return 0;
-    if (list.some(function (c) { return c.listing_id === id; })) return 0;  // already have it
+
+    // Skip a listing already captured -- unless the stored copy predates the
+    // promotions support added in v1.1, in which case re-visiting UPGRADES it
+    // in place. Without this, plain dedupe would make old captures impossible
+    // to enrich without wiping everything and starting again.
+    var existing = list.filter(function (c) { return c.listing_id === id; });
+    if (existing.length) {
+      if (existing.every(function (c) { return c.promotions !== undefined; })) return 0;
+      list = list.filter(function (c) { return c.listing_id !== id; });
+    }
 
     var payloads = readLinkedData();
     if (!payloads.length) return 0;
 
+    var promotions = readPromotions();
     payloads.forEach(function (p) {
       list.push({
         ts: new Date().toISOString(),
         url: location.href,
         listing_id: id,
         source: 'userscript:ld+json',
+        promotions: promotions,
         data: p
       });
     });
@@ -120,13 +201,14 @@
 
   function summary() {
     var list = load();
-    var suites = 0, withSqft = 0;
+    var suites = 0, withSqft = 0, withPromo = 0;
     list.forEach(function (c) {
       var places = (c.data.mainEntity && c.data.mainEntity.containsPlace) || [];
       suites += places.length;
       places.forEach(function (p) { if (p.floorSize && p.floorSize.value) withSqft++; });
+      if (c.promotions && c.promotions.promos && c.promotions.promos.length) withPromo++;
     });
-    return { listings: list.length, suites: suites, withSqft: withSqft };
+    return { listings: list.length, suites: suites, withSqft: withSqft, withPromo: withPromo };
   }
 
   function download() {
@@ -157,7 +239,7 @@
       'box-shadow:0 2px 10px rgba(0,0,0,.28)', 'user-select:none', 'opacity:.93'
     ].join(';');
     el.title = 'Click to download captures. Shift-click to clear.';
-    el.textContent = s.listings + ' listings · ' + s.suites + ' suites (' + s.withSqft + ' with sq ft) ⬇';
+    el.textContent = s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇';
     el.addEventListener('click', function (e) {
       if (e.shiftKey) {
         if (confirm('Clear all captured listings?')) {
@@ -179,7 +261,7 @@
   if (!added) setTimeout(function () {
     if (capture()) {
       var el = document.getElementById('rf-detail-badge');
-      if (el) { var s = summary(); el.textContent = s.listings + ' listings · ' + s.suites + ' suites (' + s.withSqft + ' with sq ft) ⬇'; }
+      if (el) { var s = summary(); el.textContent = s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇'; }
     }
   }, 1800);
 })();
