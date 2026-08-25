@@ -126,6 +126,31 @@ Caveats, from the first 4 captures:
 
 Amenities run 3–30 per listing (median 18). Suites per listing run 1–17.
 
+**Half the amenity vocabulary is noise.** Pooled over 30 listings, 12 entries
+are *area* features rather than building features and are near-universal —
+Bus, Playground/Park and Shopping Center are all 30/30, Bike Paths 28/30. They
+carry no discriminating signal. Fridge and Oven/Stove at 26/30 are the same
+story. **25 of 50 distinct amenities actually vary** and are worth keeping:
+Dishwasher 20/30, Elevator 17, Balcony 16, Fitness Area 11, Air Conditioning 9,
+Laundry In-Suite 9 versus Shared 10, and the flooring set — Carpeted 7,
+Laminate 6, Hardwood 4, Luxury Vinyl Plank 3, Tile 3.
+
+**Facts versus claims.** The prose cannot be trusted as evidence. "Fully
+renovated boutique suites" states neither when nor to what degree, and the
+worst stock still advertises itself as highly amenitized. Only checkable facts
+carry weight: rent, square feet, beds, baths, utilities included, and the
+binary amenity entries — flooring type especially, since it is the closest
+thing to an observable proxy for suite condition. Treat `description` and
+`slogan` as leads to verify, never as attributes.
+
+**Incentives can be baked into the listing photo.** Confirmed 2026-08-25:
+Beau Mills advertised "0.5 months free rent" in the listing *image*, with
+nothing in the promo box (`promotions: null`) and nothing in the description.
+No text or DOM extraction can reach that. The image URLs are captured, so OCR
+remains possible later, but for now an image-only incentive is invisible to
+the pipeline and only a human sees it. Record those in the survey catalogue
+with `incentive_source = listing image`.
+
 Two consequences:
 
 - **Square footage is solved for any building with a listing.** 98% here

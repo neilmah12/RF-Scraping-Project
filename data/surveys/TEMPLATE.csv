@@ -1,0 +1,2 @@
+survey_id,survey_date,surveyor,purpose,role,building_name,address,rentfaster_id,building_id,unit_type,sqft,rent,rent_psf,incentive_noted,incentive_source,included,comp_basis,condition_call,notes
+YYYY-MM-DD_subject_slug,YYYY-MM-DD,Neil,Rental market survey,subject | comp,,,paste the listing URL or the bare id,optional,Bachelor | 1 Bed/1 Bath | ...,,,leave blank to compute,,promo box | description | listing image | phone call,Y | N,area | asset type | vintage | ...,renovated | partial | original,
