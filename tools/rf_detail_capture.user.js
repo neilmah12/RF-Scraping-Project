@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.3
+// @version      1.4
 // @description  Keeps the schema.org listing data your browser already loaded, while you browse Rentfaster listings by hand. Issues no requests of its own.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -83,9 +83,22 @@
     try { return JSON.parse(localStorage.getItem(STORE) || '[]'); }
     catch (e) { return []; }
   }
+  // Captures run ~14KB each, so a 5-10MB localStorage quota fills somewhere
+  // around 350-750 listings. Before v1.4 a quota failure was swallowed: the
+  // write threw, capture() ignored the result, and the badge kept counting as
+  // if nothing was wrong -- so a long browsing session would silently stop
+  // persisting. Failure is now sticky and shown.
   function save(list) {
-    try { localStorage.setItem(STORE, JSON.stringify(list)); return true; }
-    catch (e) { console.warn('[rf-detail] localStorage full -- download and clear.'); return false; }
+    try {
+      localStorage.setItem(STORE, JSON.stringify(list));
+      window.__rfdStorageFull = false;
+      return true;
+    } catch (e) {
+      window.__rfdStorageFull = true;
+      console.warn('[rf-detail] STORAGE FULL -- click the badge to download, then shift-click to clear. '
+                   + 'Nothing new is being saved until you do.');
+      return false;
+    }
   }
 
   function listingId() {
@@ -273,7 +286,7 @@
         data: p
       });
     });
-    save(list);
+    if (!save(list)) return 0;   // quota hit: do not report a capture that was not stored
     return payloads.length;
   }
 
@@ -308,16 +321,25 @@
   function badge() {
     if (document.getElementById('rf-detail-badge')) return;
     var s = summary();
+    var full = window.__rfdStorageFull === true;
     var el = document.createElement('div');
     el.id = 'rf-detail-badge';
     el.style.cssText = [
       'position:fixed', 'bottom:14px', 'right:14px', 'z-index:2147483647',
-      'background:#1F4E6B', 'color:#fff', 'font:12px/1.4 system-ui,sans-serif',
+      (full ? 'background:#8A5220' : 'background:#1F4E6B'), 'color:#fff', 'font:12px/1.4 system-ui,sans-serif',
       'padding:7px 11px', 'border-radius:5px', 'cursor:pointer',
       'box-shadow:0 2px 10px rgba(0,0,0,.28)', 'user-select:none', 'opacity:.93'
     ].join(';');
-    el.title = 'Click to download captures. Shift-click to clear.';
-    el.textContent = s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇';
+    el.title = full
+      ? 'STORAGE FULL - nothing new is being saved. Download, then shift-click to clear.'
+      : 'Click to download captures. Shift-click to clear.';
+    el.textContent = full
+      ? '⚠ STORAGE FULL - download now (' + s.listings + ' held) ⬇'
+      : s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇';
+    // Nudge to download well before the quota bites.
+    if (!full && s.listings >= 250 && s.listings % 50 === 0) {
+      el.textContent = '↓ ' + el.textContent + '  (worth downloading)';
+    }
     el.addEventListener('click', function (e) {
       if (e.shiftKey) {
         if (confirm('Clear all captured listings?')) {
