@@ -36,6 +36,12 @@ Caveats carried into the output
   mix. One capture showed a single 1-bed while its own description mentioned
   bachelor, 1 and 2 bedroom units. Treat a row as a rent observation, not a
   rent roll line.
+- `vacancy_signal` is directional, not a vacancy rate. `current` means at
+  least one advertised suite type is available now and says NOTHING about how
+  many units that is. `none_current` means every advertised suite type is
+  future-dated, which is evidence of no vacancy today -- but only across the
+  suite types the building chose to advertise. A building with no listing at
+  all is absent from this file entirely and must never be read as full.
 - `parentOrganization` is the property MANAGER, which is not always the owner.
   It corroborated Inventory's Owner Company on 11 of 15 comparable listings;
   the misses include a building Zen Residential manages for an individual.
@@ -48,7 +54,9 @@ Caveats carried into the output
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
+import datetime
 import json
 import pathlib
 import re
@@ -58,6 +66,7 @@ LISTING_FIELDS = [
     "manager_url", "street_address", "locality", "postal_code", "latitude",
     "longitude", "price_range", "phone", "pets_allowed", "smoking_allowed",
     "n_suite_types", "n_amenities", "amenities",
+    "vacancy_signal", "suite_types_immediate", "earliest_available",
     "incentive_detected", "incentive_kinds", "incentive_snippet",
     "promo_count", "promo_types", "promo_headlines", "promo_body",
     "promo_discount", "promo_discount_amount", "promo_lease_length",
@@ -69,9 +78,96 @@ SUITE_FIELDS = [
     "listing_id", "capture_date", "name", "street_address", "postal_code",
     "latitude", "longitude", "manager", "suite_index", "beds", "baths_full",
     "baths_partial", "rent", "sqft", "rent_per_sqft", "availability",
+    "available_date", "available_immediate",
     "utilities_included", "unit_number", "suite_label", "suite_description",
     "incentive_detected", "incentive_kinds", "url",
 ]
+
+
+# --- availability ----------------------------------------------------------
+# `Availability Date` arrives as display text, not a date: "Immediate",
+# "Sep 01, 2026", and in map.json the yearless "Sep 01". Left as a string it
+# sorts alphabetically in Excel and cannot be diffed between captures, so it is
+# parsed into a date plus a flag while the original text is kept verbatim.
+#
+# The flag is the load-bearing half. A dated availability is just a notice
+# period; "Immediate" is a suite standing empty right now.
+
+MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun",
+     "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+
+# Values that are not dates and not vacancies. "No Vacancy" is an explicit
+# statement of no availability, which is not the same as an unparseable blank.
+NOT_A_DATE = {"negotiable": "", "no vacancy": "none", "immediate": "immediate"}
+
+
+def parse_availability(value, capture_date: str = "") -> tuple:
+    """-> (ISO date or "", flag). Flag is immediate / dated / none / "".
+
+    A yearless "Sep 01" is resolved against the capture date: a month-day
+    already past is next year, since a listing does not advertise a date it
+    has missed.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    keyword = NOT_A_DATE.get(text.lower())
+    if keyword is not None:
+        return "", keyword
+
+    found = re.match(r"([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$", text)
+    if not found:
+        return "", ""
+    month = MONTHS.get(found.group(1).lower())
+    if not month:
+        return "", ""
+    day = int(found.group(2))
+    if found.group(3):
+        year = int(found.group(3))
+    else:
+        base = capture_date[:10] or datetime.date.today().isoformat()
+        try:
+            today = datetime.date.fromisoformat(base)
+        except ValueError:
+            today = datetime.date.today()
+        year = today.year + (1 if (month, day) < (today.month, today.day) else 0)
+    try:
+        return datetime.date(year, month, day).isoformat(), "dated"
+    except ValueError:
+        return "", ""
+
+
+def vacancy_signal(suites: list[dict]) -> tuple:
+    """Roll the suite-level flags up to one statement about the building.
+
+    Neil's rule, and it is the right way round: an "Immediate" suite proves
+    there IS vacancy but says nothing about how much, while a listing whose
+    advertised suites are ALL future-dated is evidence of no vacancy today.
+
+    Returns (signal, suite types marked immediate, earliest dated availability).
+
+    Two limits the caller must not lose:
+
+    - the count is SUITE TYPES, not units. One "Immediate" row can be a single
+      empty suite or twelve of them. Read it as a floor of one, never a
+      vacancy count.
+    - `containsPlace` is what is currently advertised. `none_current` means
+      nothing advertised is available today -- it is not a claim about suite
+      types the building has chosen not to list.
+    """
+    flags = [s["available_immediate"] for s in suites]
+    dates = sorted(s["available_date"] for s in suites if s["available_date"])
+    immediate = sum(1 for f in flags if f == "Y")
+    if immediate:
+        signal = "current"
+    elif dates:
+        signal = "none_current"
+    elif any(f == "none" for f in flags):
+        signal = "none_current"
+    else:
+        signal = ""
+    return signal, immediate, (dates[0] if dates else "")
 
 
 # --- incentive extraction ---------------------------------------------------
@@ -326,10 +422,13 @@ def rows(captures: dict[str, dict]):
         row.update(promo)
         listings.append(row)
 
+        first_suite = len(suites)
         for i, place in enumerate(places, start=1):
             props = _properties(place)
             rent = _number((place.get("potentialAction") or {}).get("price"))
             sqft = _number((place.get("floorSize") or {}).get("value")) or _number(props.get("Square Feet"))
+            raw_availability = props.get("Availability Date")
+            available_date, available_flag = parse_availability(raw_availability, date)
             suites.append({
                 "listing_id": listing_id, "capture_date": date,
                 "name": entity.get("name"),
@@ -342,7 +441,10 @@ def rows(captures: dict[str, dict]):
                 "baths_partial": place.get("numberOfPartialBathrooms"),
                 "rent": rent, "sqft": sqft,
                 "rent_per_sqft": round(rent / sqft, 3) if rent and sqft else None,
-                "availability": props.get("Availability Date"),
+                "availability": raw_availability,
+                "available_date": available_date,
+                "available_immediate": {"immediate": "Y", "dated": "N",
+                                        "none": "none"}.get(available_flag, ""),
                 "utilities_included": props.get("Utilities Included"),
                 # containsPlace `name` is sometimes "Unit 785-205" and
                 # sometimes "1 bed, 1 bath, $999" -- the unit number is only
@@ -355,6 +457,11 @@ def rows(captures: dict[str, dict]):
                 "incentive_kinds": "|".join(kinds),
                 "url": capture.get("url"),
             })
+
+        signal, immediate, earliest = vacancy_signal(suites[first_suite:])
+        row["vacancy_signal"] = signal
+        row["suite_types_immediate"] = immediate
+        row["earliest_available"] = earliest
     return listings, suites
 
 
@@ -394,6 +501,22 @@ def main():
     if suites:
         print(f"  square feet        {with_sqft}/{len(suites)} ({100*with_sqft/len(suites):.0f}%)")
         print(f"  utilities included {with_utils}/{len(suites)} ({100*with_utils/len(suites):.0f}%)")
+        resolved = sum(1 for s in suites if s["available_immediate"])
+        print(f"  availability       {resolved}/{len(suites)} ({100*resolved/len(suites):.0f}%) resolved to a date or a flag")
+        signals = collections.Counter(l["vacancy_signal"] or "unknown" for l in listings)
+        print(f"  vacancy signal     " + ", ".join(f"{k} {v}" for k, v in signals.most_common()))
+
+    # Any availability text the parser did not recognise. Surfaced rather than
+    # left blank: a new phrasing ("Available now") would otherwise read as
+    # missing data, and the fix is one entry in NOT_A_DATE.
+    unparsed = collections.Counter(
+        s["availability"] for s in suites
+        if s["availability"] and not s["available_date"] and not s["available_immediate"]
+    )
+    if unparsed:
+        print("  UNPARSED availability text -- add to NOT_A_DATE or the date pattern:")
+        for text, count in unparsed.most_common():
+            print(f"    {count:3d}  {text!r}")
     print(f"Wrote {outdir}/rf_detail_listings.csv and rf_detail_suites.csv")
 
 

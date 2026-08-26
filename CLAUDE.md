@@ -123,8 +123,37 @@ Caveats, from the first 4 captures:
 | suite | bedrooms, bathrooms, rent | **100%** |
 | suite | **floorSize (square feet)** | **98%** |
 | suite | Utilities Included | 75% |
+| suite | Availability Date | 100% (8/8 on the survey capture) |
 
 Amenities run 3–30 per listing (median 18). Suites per listing run 1–17.
+
+**Availability is a directional vacancy read, and the two values say
+opposite things.** `Availability Date` arrives per suite type as display text:
+"Immediate", "Sep 01, 2026", or in map.json the yearless "Sep 01".
+`parse_rf_detail.py` keeps the raw string and adds `available_date` (ISO) and
+`available_immediate`, then rolls them up per listing into `vacancy_signal`:
+
+| Value | Means | Does NOT mean |
+|---|---|---|
+| `current` | at least one advertised suite type is available now | any particular amount of vacancy |
+| `none_current` | every advertised suite type is future-dated | the building is full |
+| `unknown` | nothing parseable | anything |
+
+The asymmetry is the point. "Immediate" proves vacancy exists but the count is
+suite TYPES, not units -- one row can be a single empty suite or twelve, so
+read `suite_types_immediate` as a floor of one. A listing whose suites are all
+future-dated is the more informative case: nothing is available today, which
+is a real no-vacancy observation for the suite types being advertised.
+
+Three limits that must travel with it. `containsPlace` is what is currently
+advertised, so `none_current` is silent about suite types the building chose
+not to list. A building with no listing at all is absent from the file
+entirely and must never be read as full. And in map.json availability sits at
+LISTING grain, not suite grain, so the all-future-dated inference needs a
+detail capture -- the monthly map pull cannot produce it.
+
+Unrecognised availability text is reported by the parser rather than left
+blank, so a new phrasing surfaces instead of reading as missing data.
 
 **Half the amenity vocabulary is noise.** Pooled over 30 listings, 12 entries
 are *area* features rather than building features and are near-universal —
@@ -591,6 +620,7 @@ rf_data/
 | 2026-08-18 | Matching validated against Inventory for the first time: **785 of 1,322 listings match a building on civic address**. Broken out by type — Apartment 71.4%, Townhouse 23.9%, Fourplex 7.7%. The long-standing "55% match rate" is therefore mostly **composition, not failure**, and it closes the open question in Section 4 about whether Townhouse/Fourplex listings match a 5+ unit inventory: mostly they do not. But `type` must NOT be used to scope capture — the label is poster-chosen and wrong in both directions (a "Fourplex" resolved to an 8-unit building, "Townhouse" to a 311-unit complex). Keep the Apartment + Townhouse + Fourplex, no-condo convention as is |
 | 2026-08-18 | Multi-address range notation (`14519/14525 92 Street`) costs real matches. Expanding to each endpoint lifts matches **740 → 785 (+6.1%)**. Implemented as `tools/address_variants.py` in the companion repo, deliberately not folded into its audited `normalize.py` |
 | 2026-08-18 | `thumb2` is now load-bearing rather than "present but unused" (Section 4): **1,321 of 1,322 listings carry an image URL**, and with no coordinates on the Inventory side the listing photo is the *primary* verification channel for matching. Surfaced as a clickable link in the review workbook — the human clicks, the browser fetches, nothing here issues a request to Rentfaster |
+| 2026-08-25 | Availability parsed into `available_date` + `available_immediate` per suite, rolled up to `vacancy_signal` per listing. Neil's rule: "Immediate" proves vacancy exists but not how much; all-future-dated with no immediate is evidence of no current vacancy. Counts are suite types not units, and only the detail capture has the grain for it -- map.json carries availability per listing |
 | 2026-08-25 | A listing address disagreeing with Inventory by a few civic numbers is often the same building, not a missing one. Meadow Mews advertises at 12408 161 Avenue NW; Inventory holds it at 12404 as a 4-structure complex. Same-side (even) differences of 4 or less are candidates, opposite-side (odd) ones are across the street and are not. Review queue lives in the companion repo as `tools/civic_near_miss.py` |
 | 2026-08-25 | A building can be in CoStar and still be absent from this project's CoStar pull. Meadow Mews carries CoStar ID 11289926 but appears in none of the three exports, which cover Secondary Type = Apartments only — it is a condo corporation. Inventory has it from FileMaker alone. Absence from the pull is not absence from CoStar |
 | 2026-08-18 | Highest-value next action is **a second capture**, not code. Only one snapshot exists (2026-08-11), so `rent_changes()` and `promo_changes()` have never run against real history, and open question 7 (listing_id stability on dormancy/reactivation) stays unanswerable. That question determines whether the permanent-match design is even correct, so it gates the build |
