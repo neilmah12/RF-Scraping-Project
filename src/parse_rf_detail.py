@@ -60,6 +60,10 @@ import datetime
 import json
 import pathlib
 import re
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import availability  # noqa: E402  -- see its header, duplicated across repos
 
 LISTING_FIELDS = [
     "listing_id", "capture_date", "name", "slogan", "manager", "manager_phone",
@@ -82,92 +86,6 @@ SUITE_FIELDS = [
     "utilities_included", "unit_number", "suite_label", "suite_description",
     "incentive_detected", "incentive_kinds", "url",
 ]
-
-
-# --- availability ----------------------------------------------------------
-# `Availability Date` arrives as display text, not a date: "Immediate",
-# "Sep 01, 2026", and in map.json the yearless "Sep 01". Left as a string it
-# sorts alphabetically in Excel and cannot be diffed between captures, so it is
-# parsed into a date plus a flag while the original text is kept verbatim.
-#
-# The flag is the load-bearing half. A dated availability is just a notice
-# period; "Immediate" is a suite standing empty right now.
-
-MONTHS = {m: i for i, m in enumerate(
-    ["jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
-
-# Values that are not dates and not vacancies. "No Vacancy" is an explicit
-# statement of no availability, which is not the same as an unparseable blank.
-NOT_A_DATE = {"negotiable": "", "no vacancy": "none", "immediate": "immediate"}
-
-
-def parse_availability(value, capture_date: str = "") -> tuple:
-    """-> (ISO date or "", flag). Flag is immediate / dated / none / "".
-
-    A yearless "Sep 01" is resolved against the capture date: a month-day
-    already past is next year, since a listing does not advertise a date it
-    has missed.
-    """
-    text = str(value or "").strip()
-    if not text:
-        return "", ""
-    keyword = NOT_A_DATE.get(text.lower())
-    if keyword is not None:
-        return "", keyword
-
-    found = re.match(r"([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$", text)
-    if not found:
-        return "", ""
-    month = MONTHS.get(found.group(1).lower())
-    if not month:
-        return "", ""
-    day = int(found.group(2))
-    if found.group(3):
-        year = int(found.group(3))
-    else:
-        base = capture_date[:10] or datetime.date.today().isoformat()
-        try:
-            today = datetime.date.fromisoformat(base)
-        except ValueError:
-            today = datetime.date.today()
-        year = today.year + (1 if (month, day) < (today.month, today.day) else 0)
-    try:
-        return datetime.date(year, month, day).isoformat(), "dated"
-    except ValueError:
-        return "", ""
-
-
-def vacancy_signal(suites: list[dict]) -> tuple:
-    """Roll the suite-level flags up to one statement about the building.
-
-    Neil's rule, and it is the right way round: an "Immediate" suite proves
-    there IS vacancy but says nothing about how much, while a listing whose
-    advertised suites are ALL future-dated is evidence of no vacancy today.
-
-    Returns (signal, suite types marked immediate, earliest dated availability).
-
-    Two limits the caller must not lose:
-
-    - the count is SUITE TYPES, not units. One "Immediate" row can be a single
-      empty suite or twelve of them. Read it as a floor of one, never a
-      vacancy count.
-    - `containsPlace` is what is currently advertised. `none_current` means
-      nothing advertised is available today -- it is not a claim about suite
-      types the building has chosen not to list.
-    """
-    flags = [s["available_immediate"] for s in suites]
-    dates = sorted(s["available_date"] for s in suites if s["available_date"])
-    immediate = sum(1 for f in flags if f == "Y")
-    if immediate:
-        signal = "current"
-    elif dates:
-        signal = "none_current"
-    elif any(f == "none" for f in flags):
-        signal = "none_current"
-    else:
-        signal = ""
-    return signal, immediate, (dates[0] if dates else "")
 
 
 # --- incentive extraction ---------------------------------------------------
@@ -422,13 +340,13 @@ def rows(captures: dict[str, dict]):
         row.update(promo)
         listings.append(row)
 
-        first_suite = len(suites)
+        parsed_availability = []
         for i, place in enumerate(places, start=1):
             props = _properties(place)
             rent = _number((place.get("potentialAction") or {}).get("price"))
             sqft = _number((place.get("floorSize") or {}).get("value")) or _number(props.get("Square Feet"))
             raw_availability = props.get("Availability Date")
-            available_date, available_flag = parse_availability(raw_availability, date)
+            available_date, available_flag = availability.parse(raw_availability, date)
             suites.append({
                 "listing_id": listing_id, "capture_date": date,
                 "name": entity.get("name"),
@@ -443,8 +361,9 @@ def rows(captures: dict[str, dict]):
                 "rent_per_sqft": round(rent / sqft, 3) if rent and sqft else None,
                 "availability": raw_availability,
                 "available_date": available_date,
-                "available_immediate": {"immediate": "Y", "dated": "N",
-                                        "none": "none"}.get(available_flag, ""),
+                "available_immediate": (
+                    "Y" if availability.is_available_now(available_date, available_flag, date)
+                    else {"dated": "N", "none": "none"}.get(available_flag, "")),
                 "utilities_included": props.get("Utilities Included"),
                 # containsPlace `name` is sometimes "Unit 785-205" and
                 # sometimes "1 bed, 1 bath, $999" -- the unit number is only
@@ -457,10 +376,11 @@ def rows(captures: dict[str, dict]):
                 "incentive_kinds": "|".join(kinds),
                 "url": capture.get("url"),
             })
+            parsed_availability.append((available_date, available_flag))
 
-        signal, immediate, earliest = vacancy_signal(suites[first_suite:])
+        signal, now, earliest = availability.signal(parsed_availability, date)
         row["vacancy_signal"] = signal
-        row["suite_types_immediate"] = immediate
+        row["suite_types_immediate"] = now
         row["earliest_available"] = earliest
     return listings, suites
 
