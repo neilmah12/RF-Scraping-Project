@@ -2,6 +2,8 @@
 
 Project reference file. Written 2026-07-30. Updated 2026-08-18.
 
+**New session? Read `property-merge-pipeline/docs/HANDOFF.md` first.**
+
 **Cross-repo:** listing-to-building matching, the durable-key design and the
 Edmonton assessment work now live in the companion repo
 `property-merge-pipeline` — see its `CLAUDE.md` and
