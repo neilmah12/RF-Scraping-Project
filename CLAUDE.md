@@ -55,9 +55,10 @@ Refi screening is therefore a JOIN, not a build.
 ## 4. Rentfaster data source
 
 **No automated scraping.** Rentfaster has bot protection; the workflow is a manual
-monthly console capture. Neil filters the map (Apartment + Townhouse + Fourplex;
-Triplex and condo units excluded — Triplex dropped 2026-08-11, not really
-multifamily; may revisit), opens DevTools Network tab (or uses the console
+monthly console capture. Neil filters the map (Apartment + Townhouse only;
+Triplex, Fourplex, and condo units excluded — Triplex dropped 2026-08-11,
+Fourplex dropped 2026-09-10, neither considered core to the multifamily
+inventory), opens DevTools Network tab (or uses the console
 capture helper below), and saves map.json responses. Pipeline ingests whatever
 files he saves. Keep it this way — do not add automated fetching: every
 capture must still originate from Neil manually panning/zooming/drawing on the
@@ -265,8 +266,8 @@ Run on every section file as it comes off the browser, before ingesting:
 
 Checks per file: listings vs the real 500 cap (flags at/near cap), array length
 vs `min(total, total2)`, active `search.type` filter vs the
-Apartment+Townhouse+Triplex+Fourplex/no-condo convention, duplicate ids, and
-city/type/bbox composition. Across a section set it also reports cross-section
+Apartment+Townhouse-only/no-condo/no-triplex/no-fourplex convention, duplicate
+ids, and city/type/bbox composition. Across a section set it also reports cross-section
 overlap so double-drawn areas are visible before ingest dedupes them silently.
 
 This exists because `ingest_snapshot`'s coverage number does not work for
@@ -406,6 +407,7 @@ rf_data/
 | 2026-08-14 | **map.json price/beds fields are FILTER-DEPENDENT -- they describe only the suites matching the active query, not the whole property.** Found comparing the same listing across two captures: id 757246 returns `price2` 1292 / `beds2` 2 under a 1050-1350 price band, but `price2` 1477 / `beds2` 3 with no price filter; id 578904 returns `price2` null / `beds2` null banded vs 1899 / 3 unbanded. Two consequences. First, this retroactively justifies rejecting price-band capture (2026-08-11 entry): it would have silently recorded truncated rent ranges for every multi-suite property, corrupting exactly the buildings the rent table most needs. Second and still open: the same mechanism may apply to the property-type filter -- a building advertising both an excluded type (Condo Unit) and an included one could be reporting a range clipped to only the included suites. Not yet tested; worth one capture with all types enabled compared against the standard filter on the same area before Step 4 relies on these ranges |
 | 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
+| 2026-09-10 | Dropped Fourplex from the filter convention (Neil: no longer needed). Convention is now Apartment + Townhouse only, no condo, no triplex, no fourplex. `check_capture.py`'s `EXPECTED_TYPES`/`BANNED_TYPES` updated to match. Ingested the 2026-09-10 monthly pull (`console_session_1.json`, 75 sub-captures via `rf_console_capture.js`, snapshot_date 2026-09-10): 6,356 raw rows, 1,256 unique properties, 2,619 suite types vs largest single-view total of 2,570 (101.9% floor-coverage). All 75 captures were filtered Apartment+Townhouse only (retroactively clean against the new convention, no re-draw needed) since Fourplex was already dropped before this session's captures. 2 of 75 captures (the initial wide zoomed-out sweep) hit the 500-property cap and were individually truncated by ~1,270 suite types each, but verified harmless: only 2 listing ids in the entire file appear exclusively in those 2 capped captures and nowhere else -- Neil's subsequent zoomed-in passes already covered what the wide sweep missed, confirmed by the >100% overall coverage figure |
 
 ## 9. Open questions
 

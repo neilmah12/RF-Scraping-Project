@@ -13,8 +13,10 @@ can't recover from after the fact:
      "complete" for whatever filter was actually active -- so it has to be
      checked against the expected set explicitly.
 
-Convention (CLAUDE.md section 4): Apartment + Townhouse + Fourplex, Condo Unit
-and Triplex excluded (Triplex dropped 2026-08-11, not really multifamily).
+Convention (CLAUDE.md section 4): Apartment + Townhouse only, Condo Unit,
+Triplex and Fourplex excluded (Triplex dropped 2026-08-11; Fourplex dropped
+2026-09-10, no longer needed -- both deemed not core to the multifamily
+inventory this pipeline targets).
 
 Accepts two file shapes:
   - A single raw map.json payload (one draw/pan capture, the original workflow).
@@ -48,8 +50,8 @@ def _units_of(listing):
     except (TypeError, ValueError):
         return 1
 
-EXPECTED_TYPES = {"Apartment", "Townhouse", "Fourplex"}
-BANNED_TYPES = {"Condo Unit"}
+EXPECTED_TYPES = {"Apartment", "Townhouse"}
+BANNED_TYPES = {"Condo Unit", "Triplex", "Fourplex"}
 
 CITY_NAMES = {
     "2": "Edmonton", "43": "St. Albert", "33": "Sherwood Park",
