@@ -110,6 +110,61 @@ KNOWN_PROMO_CODES = {
     "move_in_gift": "promo_move_in_gift",
 }
 
+# Property types dropped at ingest (decided 2026-10-02: Fourplex is no longer
+# captured, so legacy rows are removed rather than left to read as monthly
+# "exits"). Applied to new payloads and purged from any existing snapshots.
+EXCLUDED_TYPES = {"Fourplex"}
+
+# PROVISIONAL persistence weighting (2026-10-02). Informational columns only:
+# nothing in the pipeline filters or weights on them. Revisit with 6+ monthly
+# snapshots before using. See CLAUDE.md decision log.
+PERSISTENCE_CAP = 3
+CONFIDENCE_FACTOR = {"direct": 1.0, "certain": 1.0, "inferred": 0.7, "blended": 0.4}
+CUT_MIN_PCT = 1.0  # smallest price_lo drop counted as a rent cut
+
+
+def _persistence_cols(snaps, master):
+    """Derived, rebuilt-every-ingest columns on the master. Provisional."""
+    dates = sorted(snaps["snapshot_date"].unique())
+    pos = {d: i for i, d in enumerate(dates)}
+    s = snaps.sort_values(["listing_id", "snapshot_date"])
+    s = s.assign(_i=s["snapshot_date"].map(pos))
+
+    # snapshots available since first sighting (denominator for persistence)
+    first_i = s.groupby("listing_id")["_i"].min()
+    last_i = s.groupby("listing_id")["_i"].max()
+    master = master.set_index("listing_id")
+    master["snapshots_since_first_seen"] = len(dates) - first_i.reindex(master.index)
+    # gap: absent from at least one snapshot between first and last sighting
+    span = last_i - first_i + 1
+    master["gap_flag"] = (span.reindex(master.index) > master["n_snapshots"])
+
+    # streak of consecutive snapshots ending at the latest snapshot (0 if inactive)
+    present = {lid: set(g) for lid, g in s.groupby("listing_id")["_i"]}
+    top = len(dates) - 1
+    def streak(lid):
+        n, i = 0, top
+        while i in present[lid]:
+            n, i = n + 1, i - 1
+        return n
+    master["current_streak"] = [streak(l) for l in master.index]
+
+    # rent cuts on price_lo across consecutive OBSERVED prices (gaps bridged)
+    pr = s[s["price_lo"].notna()].copy()
+    pr["prev"] = pr.groupby("listing_id")["price_lo"].shift()
+    pr["pct"] = (pr["price_lo"] - pr["prev"]) / pr["prev"] * 100
+    pr["cut"] = pr["pct"] <= -CUT_MIN_PCT
+    master["n_rent_cuts"] = pr.groupby("listing_id")["cut"].sum().reindex(master.index).fillna(0).astype(int)
+    last_step = pr.groupby("listing_id").tail(1).set_index("listing_id")["cut"]
+    master["lingering_cut"] = last_step.reindex(master.index).fillna(False).astype(bool)
+
+    # provisional composite weight
+    master["persistence_weight"] = (
+        master["n_snapshots"].clip(upper=PERSISTENCE_CAP)
+        * master["rent_confidence"].map(CONFIDENCE_FACTOR).fillna(0.4)
+    ).round(2)
+    return master.reset_index()
+
 def address_from_slug(link):
     """'/properties/8217-130-ave-edmonton-358143' -> '8217 130 ave' (city+id stripped).
     Returns None for generic slugs like 'rentals-edmonton-635135'."""
@@ -257,8 +312,12 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     n_raw = len(df)
     df = df.drop_duplicates(subset="listing_id", keep="first")
     df = df[df["listing_id"].notna()]
+    n_excluded = int(df["type"].isin(EXCLUDED_TYPES).sum())
+    df = df[~df["type"].isin(EXCLUDED_TYPES)]
     df["snapshot_date"] = snapshot_date
     n_unique = len(df)
+    if n_excluded:
+        print(f"[{snapshot_date}] excluded {n_excluded} listings of type {sorted(EXCLUDED_TYPES)}")
 
     # Portfolio footprint: how many units this poster has live in this
     # snapshot. Cheap, already-present field (user_id) made filterable/
@@ -292,6 +351,7 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     existing = _load(snap_path)
     if existing is not None:
         existing = existing[existing["snapshot_date"] != snapshot_date]  # re-run safe
+        existing = existing[~existing["type"].isin(EXCLUDED_TYPES)]  # purge legacy rows
         snaps = pd.concat([existing, df], ignore_index=True)
     else:
         snaps = df
@@ -307,6 +367,7 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     latest_snap = snaps["snapshot_date"].max()
     master["active"] = master["last_seen"] == latest_snap
     master = master.reset_index()
+    master = _persistence_cols(snaps, master)
 
     _save(master, data_dir / "listings_master.parquet")
     master.to_csv(data_dir / "listings_master.csv", index=False)
