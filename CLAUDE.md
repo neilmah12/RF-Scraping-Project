@@ -240,12 +240,31 @@ documented; capture an example when first needed.
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | Ingest: map.json → snapshots + listings_master | **DONE** — `rentfaster_ingest.py`, tested |
+| 1 | Ingest: map.json → snapshots + listings_master | **DONE** — `rentfaster_ingest.py`, 3 monthly snapshots ingested (Aug 11, Sep 10, Oct 2 2026) |
 | 2 | Geocode Inventory addresses (one-time, ~5,226) | NEXT — decide geocoder (reuse Colab sales geocoder vs fresh City of Edmonton Open Data geocoder) |
 | 3 | Matching engine: listing ↔ building, ~50m threshold, slug-address cross-check, manual review queue, permanent match table | pending |
 | 4 | Rent table: per-building per-suite-type asking rents w/ confidence flags + submarket/vintage aggregates for unlisted buildings | pending |
 | 5 | Signals: below-market flag (subject vs comp median), listing activity (duration, count, rent cuts), refi join from Sales | pending |
 | 6 | Proforma engine (format TBD with Neil; standard PGI→NOI→value expected) | pending |
+
+### Current status (2026-10-02)
+
+- Capture + ingest pipeline is stable and running monthly: `rf_console_capture.js`
+  -> `check_capture.py` -> `ingest_snapshot`. Three snapshots in the store
+  (2026-08-11, 2026-09-10, 2026-10-02): 1,295 / 1,256 / 1,257 properties,
+  1,791 distinct listing ids ever seen, 1,257 active.
+- Fourplex is excluded at ingest (purged from the store); filter convention is
+  Apartment + Townhouse only.
+- `listings_master` carries PROVISIONAL persistence columns (informational
+  only, no filtering or weighting until 6+ monthly snapshots exist; see
+  decision log 2026-10-02).
+- **The store is not in the repo.** `data/` is gitignored by design, so the
+  snapshots/master files live wherever the ingest ran. Neil keeps the
+  authoritative copy locally/Colab; any fresh environment (including cloud
+  sessions) starts empty and needs `snapshots.parquet` copied in before
+  ingesting a new month, or history and the month-over-month signals reset.
+- Not started: Step 2 geocoding, Step 3 matching (no Inventory workbook in the
+  repo or in cloud sessions yet), Steps 4-6.
 
 ### Step 1 details (rentfaster_ingest.py)
 
@@ -258,6 +277,14 @@ documented; capture an example when first needed.
 - Parsing handled: "studio"→0 beds, "+den" flag, junk prices (<$100 → null),
   address from slug (city + id stripped), promo flags
 - Coverage report vs site `total`; warns below 90%
+- `EXCLUDED_TYPES` (currently Fourplex) dropped from new payloads and purged
+  from existing snapshots on every ingest
+- `listings_master` persistence columns (provisional, derived each ingest):
+  `n_snapshots`, `snapshots_since_first_seen`, `current_streak`, `gap_flag`,
+  `n_rent_cuts`, `lingering_cut`, `persistence_weight`
+- Known cosmetic issue: the printed `coverage=` figure is the old
+  max-single-view floor metric and can read above 100%; ignore it, use
+  `check_capture.py` and the site's Results counter instead
 
 ### Capture QC (check_capture.py, added 2026-08-11)
 
@@ -340,6 +367,7 @@ matching (Step 3) and landlord-behavior signals (Step 5+).
 rf_data/
   snapshots.parquet(.csv)       append-only, one row per listing per snapshot
   listings_master.parquet(.csv) current state + first_seen/last_seen/active
+                                 + provisional persistence columns (Step 1 details)
   ingest_log.csv                per-run coverage QC
   city_totals.csv               metro-wide listing counts per city per snapshot
                                  (from payload's top-level 'cities' field, independent
@@ -412,6 +440,7 @@ rf_data/
 | 2026-10-02 | Combined Aug 11 + Sep 10 + Oct 2 into one store (1,791 listings ever seen). Persistence read: 808 listings present in all 3 snapshots (44% of all ids seen); 83% of October's live listings were seen in an earlier snapshot; Aug to Sep retention 74%, Sep to Oct 79%. Churn concentrates in Townhouse (24% present in all 3 vs 60% for Apartment), single-suite-type ads (27% vs 68-77% for 2+ suite types) and small posters (<10 live listings: 36% vs 56%). Only 14% of partially-present ids share an address with a different id, so id reissue looks rare; 44 ids vanished in September and returned in October with the same id (partial answer to open question #7) |
 | 2026-10-02 | Fourplex EXCLUDED at ingest (`EXCLUDED_TYPES` in `rentfaster_ingest.py`): dropped from every new payload and purged from any existing `snapshots.parquet` on each ingest, so legacy August rows (27 listings) no longer read as monthly exits. Re-ingesting from raw reproduces this. Supersedes counting Fourplex in the Aug 11 snapshot |
 | 2026-10-02 | Added PROVISIONAL persistence columns to `listings_master` (derived, rebuilt every ingest from snapshots, snapshots store unchanged): `snapshots_since_first_seen`, `current_streak` (consecutive snapshots ending at the latest, 0 if inactive), `gap_flag` (absent from a snapshot between first and last sighting), `n_rent_cuts` (price_lo drops of >=1% between consecutive OBSERVED prices, gaps bridged), `lingering_cut` (most recent observed price is a >=1% drop vs prior observed price), `persistence_weight` = min(n_snapshots, 3) x confidence factor (direct 1.0, certain 1.0, inferred 0.7, blended 0.4). INFORMATIONAL ONLY: nothing filters or weights on them. Do not apply weights or automatic filtering until 6+ monthly snapshots exist. Known limits: left-censoring (first_seen only means tracking started; new listings look weak simply for being new), absence can be a capture miss (~97% coverage) not a real exit, snapshot gaps are uneven (30 and 22 days), and a high weight rewards a listing that lingers unrented, so lingering_cut stays a separate softness signal and is never folded into the weight. Check on first Oct build: gap_flag=44 matches the independent same-id-returned count, current_streak>0 equals active for every row, 278 listings flagged lingering_cut, 45 cut twice |
+| 2026-10-02 | Pre-matching data review (3 snapshots, 1,257 active listings). Quality is good: lat/long 100%, civic-numbered slug 94%, price_lo 99.6%, community 89%; coordinates are stable per listing (16 of 1,209 multi-snapshot listings ever change, only 7 move >50m), so the ~50m threshold is sound. rent_confidence of active listings: direct 52%, inferred 20%, blended 22%, certain 6%. Direction suffix (NW/NE/SW/SE) present on only 56% of slugs, confirming the normalize-direction rule. Matching ceiling: ~1,164 distinct active addresses vs a 5,252-building Inventory means at most ~22% of Inventory can have a live Rentfaster rent in any month, so the submarket/vintage comp fallback is the main path for most buildings, not an edge case. Townhouse is 36% of active listings but behaves unlike the target asset (38% posted by single-listing posters, 82% one suite type, median $1,879 vs $1,298 Apartment): many are likely individual townhouse units, not 5+ unit buildings, and may match little or nothing in Inventory. 86 listings carry 12-decimal coordinates versus 7 for the rest, source of the difference unknown. 32 addresses have more than one active listing, so Step 3/4 must aggregate listings to a building before computing a building rent |
 
 ## 9. Open questions
 
@@ -449,21 +478,28 @@ RF-Scraping-Project/
   CLAUDE.md                  <- this file
   README.md
   src/
-    rentfaster_ingest.py     <- exists (step 1)
-    check_capture.py         <- capture QC: run per section file before ingest
-    geocode_inventory.py     <- step 2
-    match_engine.py          <- step 3
-    rent_table.py            <- step 4
-    signals.py               <- step 5
+    rentfaster_ingest.py     <- exists (step 1, done)
+    check_capture.py         <- exists: capture QC, run per capture file before ingest
+    geocode_inventory.py     <- step 2 (not yet created)
+    match_engine.py          <- step 3 (not yet created)
+    rent_table.py            <- step 4 (not yet created)
+    signals.py               <- step 5 (not yet created; rent_changes/promo_changes
+                                 currently live in rentfaster_ingest.py)
   tools/
     rf_console_capture.js    <- browser console helper: auto-saves map.json
                                  responses while Neil pans manually (2026-08-11)
   data/
-    raw/                     <- monthly map.json captures (gitignored)
-    rf_data/                 <- pipeline outputs (gitignored, logs kept via .gitkeep)
+    raw/<snapshot_date>/     <- monthly map.json captures, one folder per snapshot
+                                 (gitignored; the original downloads are the source
+                                 of truth, everything in rf_data can be rebuilt)
+    rf_data/                 <- pipeline outputs (gitignored, logs kept via .gitkeep).
+                                 AUTHORITATIVE COPY LIVES ON NEIL'S MACHINE/COLAB, not here
     inventory/               <- inventory xlsx (gitignored, sensitive)
   notebooks/
-    rentfaster_ingest.ipynb  <- Colab notebook wrapping step 1
+    rentfaster_ingest.ipynb  <- Colab notebook wrapping step 1 (imports
+                                 src/rentfaster_ingest.py, so it picks up EXCLUDED_TYPES
+                                 and the persistence columns once the updated module
+                                 is uploaded to Colab)
   .gitignore                 <- data files, credentials
 ```
 
