@@ -13,8 +13,9 @@
  * XMLHttpRequest and doesn't need the exact endpoint hardcoded.
  *
  * Usage:
- *   1. Open the Rentfaster map, set your filters (Apartment + Townhouse +
- *      Fourplex, no condo), paste this whole file into the console, hit enter.
+ *   1. Open the Rentfaster map, set your filters (Apartment + Townhouse only,
+ *      no condo, triplex or fourplex), paste this whole file into the console,
+ *      hit enter.
  *   2. Pan/zoom the map around the city. Every matching response gets logged
  *      and stored automatically -- no Network tab, no manual "Save Response As".
  *   3. Run `rfStatus()` any time to see what's been captured so far.
