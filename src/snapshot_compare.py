@@ -110,13 +110,21 @@ def compare(old_source, new_source, old_date=None, new_date=None, out_dir=None,
         comp[name] = {"n": len(d), "promo_share": round(d.has_promo.fillna(False).astype(bool).mean(), 3),
                       **{f"med_{b}br": d[d.beds_lo == b].price_lo.median() for b in (1, 2, 3)}}
     res["composition"] = pd.DataFrame(comp).T
+    src = _df(old_source) if old_source is new_source else pd.concat([_df(old_source), _df(new_source)])
+    camp = campaign_posters(src)
+    res["campaign_posters"] = camp
+    skip = set(camp.user_id) if len(camp) else set()
+    def share(d):
+        d = d[~d.user_id.isin(skip)]
+        return d[["has_promo"] + PROMO_CODES].fillna(False).astype(bool).mean()
+    res["promo_share_ex_campaign"] = pd.DataFrame({"old": share(o), "new": share(n)})
 
     if verbose:
         pd.set_option("display.width", 200)
         print(f"Compare {res['dates'][0]} -> {res['dates'][1]}")
         print("supply", res["supply"]); print("clean cohort", res["clean_cohort"])
-        for k in ("median_rent", "by_beds", "promo_share", "promo_flips", "promo_vs_rent",
-                  "composition"):
+        for k in ("median_rent", "by_beds", "promo_share", "promo_share_ex_campaign",
+                  "campaign_posters", "promo_flips", "promo_vs_rent", "composition"):
             print(f"\n{k}\n{res[k].round(3)}")
         for k in ("by_city", "by_community", "by_poster"):
             print(f"\n{k} (n>={min_group}, sorted by mean % change)\n{pd.concat([res[k].head(6), res[k].tail(4)]).drop_duplicates()}")
@@ -125,7 +133,8 @@ def compare(old_source, new_source, old_date=None, new_date=None, out_dir=None,
         tag = f"{res['dates'][0]}_to_{res['dates'][1]}"
         clean.to_csv(out / f"rent_changes_clean_cohort_{tag}.csv", index=False)
         for k in ("by_beds", "by_city", "by_community", "by_poster", "promo_flips",
-                  "promo_vs_rent", "composition", "median_rent", "promo_share"):
+                  "promo_vs_rent", "composition", "median_rent", "promo_share",
+                  "promo_share_ex_campaign", "campaign_posters"):
             res[k].to_csv(out / f"{k}_{tag}.csv")
     return res
 
@@ -148,10 +157,35 @@ def supply_series(snapshots_source):
     return pd.DataFrame(rows)
 
 
-def snapshot_stats(source):
+def campaign_posters(snapshots_source, codes=("promo_rent_special", "promo_other"),
+                     min_listings=15, swing=0.5):
+    """Posters whose share of listings carrying a promo code jumps/falls by >= swing
+    between consecutive snapshots (with >= min_listings live in both). One landlord
+    switching a campaign on or off for its whole portfolio can move the market-wide
+    share by several points (poster 651, Oct 2026: 0 -> 76 rent specials -> 0)."""
+    df = _df(snapshots_source)
+    df["snapshot_date"] = df["snapshot_date"].astype(str)
+    out = []
+    for code in codes:
+        d = df.assign(_f=df[code].fillna(False).astype(bool))
+        g = d.groupby(["user_id", "snapshot_date"]).agg(n=("listing_id", "size"), share=("_f", "mean")).reset_index()
+        for uid, gg in g.groupby("user_id"):
+            gg = gg.sort_values("snapshot_date")
+            for (a, b) in zip(gg.itertuples(), gg.iloc[1:].itertuples()):
+                if a.n >= min_listings and b.n >= min_listings and abs(b.share - a.share) >= swing:
+                    out.append({"user_id": uid, "code": code, "from": a.snapshot_date, "to": b.snapshot_date,
+                                "share_from": round(a.share, 2), "share_to": round(b.share, 2),
+                                "n_from": a.n, "n_to": b.n})
+    return pd.DataFrame(out)
+
+
+def snapshot_stats(source, exclude_posters=None):
     """Per-snapshot promo share and median asking rent by beds. Needs FULL snapshots
-    (snapshots.csv); on a master file only the newest date is meaningful."""
+    (snapshots.csv); on a master file only the newest date is meaningful.
+    exclude_posters: iterable of user_ids to drop (see campaign_posters)."""
     df = _df(source)
+    if exclude_posters is not None and len(list(exclude_posters)):
+        df = df[~df["user_id"].isin(list(exclude_posters))]
     rows = []
     for d, g in df.groupby("snapshot_date"):
         r = {"snapshot_date": d, "n": len(g)}
@@ -178,6 +212,8 @@ def trend_chart(snapshots_source, out_png):
     sup = supply_series(snapshots_source).dropna(subset=['new'])
     sup0 = supply_series(snapshots_source)
     st = snapshot_stats(snapshots_source)
+    camp = campaign_posters(snapshots_source)
+    st_adj = snapshot_stats(snapshots_source, exclude_posters=camp.user_id.unique() if len(camp) else None)
     xs = lambda ds: [pd.to_datetime(d) for d in ds]
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), facecolor=SURF)
@@ -218,11 +254,17 @@ def trend_chart(snapshots_source, out_png):
     for col, colr, lab in [("has_promo", BLUE, "any promo"), ("promo_rent_special", ORANGE, "rent special"),
                            ("promo_other", AQUA, "other promo")]:
         ax.plot(x3, st[col] * 100, color=colr, lw=2, marker="o", ms=7, mec=SURF, mew=2)
-        ax.text(x3[-1], st[col].iloc[-1] * 100, f"  {lab} {st[col].iloc[-1]*100:.1f}%", color=INK, fontsize=9, va="center")
+        dy = -1.1 if (col == "promo_rent_special" and len(camp)) else 0
+        ax.text(x3[-1], st[col].iloc[-1] * 100 + dy, f"  {lab} {st[col].iloc[-1]*100:.1f}%", color=INK, fontsize=9, va="center")
         ax.text(x3[0], st[col].iloc[0] * 100, f"{st[col].iloc[0]*100:.1f}%  ", color=INK, fontsize=9, va="center", ha="right")
+    if len(camp):
+        ax.plot(x3, st_adj["promo_rent_special"] * 100, color=ORANGE, lw=1.6, ls=(0, (4, 3)))
+        ax.text(x3[-1], st_adj["promo_rent_special"].iloc[-1] * 100 + 1.4,
+                f"  excl. campaign {st_adj['promo_rent_special'].iloc[-1]*100:.1f}%",
+                color=INK, fontsize=9, va="center")
     ax.set_ylim(0, 32); ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
     ax.margins(x=0.35)
-    title(ax, "Share of listings with an incentive", "Full snapshots only")
+    title(ax, "Share of listings with an incentive", "Dashed = excluding posters that switched a promo on/off portfolio-wide")
 
     # D: median asking rent
     ax = axes[1, 1]
