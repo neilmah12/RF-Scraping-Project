@@ -14,18 +14,16 @@ Usage (Colab or local):
   res = compare("rf_data/snapshots.csv", "rf_data/snapshots.csv",
                 old_date="2026-10-02", new_date="2026-11-04", out_dir="rf_data/compare")
 
-  # Supply history from first_seen/last_seen (works from listings_master alone;
-  # assumes no gaps, so listings that skipped a snapshot are slightly undercounted).
-  trend_chart("rf_data/listings_master.csv", "rf_data/snapshots.csv",
-              "rf_data/charts/trends.png")
+  # Exact supply/promo/rent history from the full snapshots store.
+  trend_chart("rf_data/snapshots.parquet", "rf_data/charts/trends.png")
 
 Notes:
   * Rent changes use a CLEAN COHORT: listing present in both snapshots, rent
     confidence direct/certain in both, same beds_lo. Blended/inferred ranges
     move for reasons unrelated to rent (a suite type listing or delisting).
   * Asking rents, not achieved rents. price_lo is the lower end of the range.
-  * Rent and promo history before the oldest full snapshot in snapshots.csv is not
-    recoverable from listings_master.csv (it only keeps each listing's latest row).
+  * Use snapshots.parquet/.csv, not listings_master: master keeps only each
+    listing's latest row, so older months' rents/promos are not recoverable from it.
 """
 from pathlib import Path
 
@@ -37,8 +35,11 @@ PROMO_CODES = ["promo_rent_special", "promo_other", "promo_move_in_gift"]
 
 
 def _df(source):
-    return source.copy() if isinstance(source, pd.DataFrame) else pd.read_csv(
-        source, dtype={"snapshot_date": str})
+    if isinstance(source, pd.DataFrame):
+        return source.copy()
+    if str(source).endswith(".parquet"):
+        return pd.read_parquet(source)
+    return pd.read_csv(source, dtype={"snapshot_date": str})
 
 
 def load_snapshot(source, date=None):
@@ -129,39 +130,21 @@ def compare(old_source, new_source, old_date=None, new_date=None, out_dir=None,
     return res
 
 
-def supply_series(master_source, latest_snapshot=None):
-    """Active / new / dropped counts per snapshot date from first_seen/last_seen.
-
-    Snapshot dates are inferred from first_seen/last_seen. A listing counts as
-    active on a date if first_seen <= date <= last_seen, so a listing that
-    skipped a snapshot (gap_flag) is slightly undercounted mid-history.
-
-    latest_snapshot: optional DataFrame holding the newest FULL snapshot (listing_id,
-    snapshot_date). It is appended as an exact row (active = its size; new/dropped
-    by listing_id diff against the prior snapshot). Use this when the master
-    predates the newest snapshot: stitching first/last_seen across a gap would
-    count listings that vanished and returned as active in between.
-    'new' on that row includes returning IDs; on earlier rows it is first_seen only.
-    """
-    m = _df(master_source)
-    dates = sorted(set(m.first_seen.astype(str)) | set(m.last_seen.astype(str)))
-    rows, prev = [], None
-    for d in dates:
-        active = ((m.first_seen <= d) & (m.last_seen >= d)).sum()
-        new = (m.first_seen == d).sum()
-        dropped = (m.last_seen == prev).sum() if prev else np.nan
-        rows.append({"snapshot_date": d, "active": int(active), "new": int(new),
-                     "dropped_since_prev": dropped,
-                     "churn_pct": round(dropped / rows[-1]["active"], 3) if prev else np.nan})
-        prev = d
-    if latest_snapshot is not None:
-        ls = latest_snapshot.drop_duplicates("listing_id")
-        d = str(ls.snapshot_date.iloc[0])
-        prev_ids = set(m[(m.first_seen <= prev) & (m.last_seen >= prev)].listing_id)
-        cur = set(ls.listing_id)
-        rows.append({"snapshot_date": d, "active": len(cur), "new": len(cur - prev_ids),
-                     "dropped_since_prev": len(prev_ids - cur),
-                     "churn_pct": round(len(prev_ids - cur) / len(prev_ids), 3)})
+def supply_series(snapshots_source):
+    """Exact per-snapshot supply from the full snapshots store: active listings
+    (property rows), suite types, new (id not in the prior snapshot, so returning
+    ids count as new), dropped (prior ids absent now) and churn %."""
+    df = _df(snapshots_source)
+    df["snapshot_date"] = df["snapshot_date"].astype(str)
+    rows, prev_ids = [], None
+    for d, g in sorted(df.groupby("snapshot_date")):
+        ids = set(g.listing_id)
+        r = {"snapshot_date": d, "active": len(ids),
+             "suite_types": int(g.n_suite_types.fillna(1).sum()),
+             "new": len(ids - prev_ids) if prev_ids is not None else np.nan,
+             "dropped_since_prev": len(prev_ids - ids) if prev_ids is not None else np.nan}
+        r["churn_pct"] = round(r["dropped_since_prev"] / len(prev_ids), 3) if prev_ids else np.nan
+        rows.append(r); prev_ids = ids
     return pd.DataFrame(rows)
 
 
@@ -181,12 +164,10 @@ def snapshot_stats(source):
     return pd.DataFrame(rows)
 
 
-def trend_chart(master_source, stats_source, out_png, stats_dates=None, latest_snapshot=None):
+def trend_chart(snapshots_source, out_png):
     """4-panel small-multiples PNG, one y-axis per panel (no dual axes).
 
-    stats_source: a CSV/DataFrame whose snapshot_dates are FULL snapshots. Pass
-    stats_dates to restrict to specific ones (e.g. the two trustworthy dates when
-    only a master file is available for the older month).
+    snapshots_source: snapshots.parquet/.csv path or DataFrame (full history).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -194,10 +175,9 @@ def trend_chart(master_source, stats_source, out_png, stats_dates=None, latest_s
 
     BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"   # validated slots 1-3
     INK, MUTED, GRID, SURF = "#0b0b0b", "#52514e", "#e3e2de", "#fcfcfb"
-    sup = supply_series(master_source, latest_snapshot)
-    st = snapshot_stats(stats_source)
-    if stats_dates:
-        st = st[st.snapshot_date.isin(stats_dates)]
+    sup = supply_series(snapshots_source).dropna(subset=['new'])
+    sup0 = supply_series(snapshots_source)
+    st = snapshot_stats(snapshots_source)
     xs = lambda ds: [pd.to_datetime(d) for d in ds]
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), facecolor=SURF)
@@ -214,14 +194,14 @@ def trend_chart(master_source, stats_source, out_png, stats_dates=None, latest_s
         ax.text(0, 1.03, sub, transform=ax.transAxes, fontsize=8.5, color=MUTED)
 
     # A: active listings
-    ax = axes[0, 0]; x = xs(sup.snapshot_date)
+    ax = axes[0, 0]; sup = sup0; x = xs(sup.snapshot_date)
     ax.plot(x, sup.active, color=BLUE, lw=2, marker="o", ms=7, mec=SURF, mew=2)
     for xi, v in zip(x, sup.active): ax.annotate(f"{v:,}", (xi, v), (0, 9), textcoords="offset points", ha="center", fontsize=9, color=INK)
     ax.set_ylim(sup.active.min() * 0.9, sup.active.max() * 1.08)
-    title(ax, "Active listings", "Reconstructed from first/last seen (assumes no gaps)")
+    title(ax, "Active listings (properties)", "Rows per full snapshot")
 
     # B: new vs dropped
-    ax = axes[0, 1]; s2 = sup.dropna(subset=["dropped_since_prev"]); x2 = xs(s2.snapshot_date)
+    ax = axes[0, 1]; s2 = sup0.dropna(subset=["dropped_since_prev"]); x2 = xs(s2.snapshot_date)
     ax.plot(x2, s2.new, color=AQUA, lw=2, marker="o", ms=7, mec=SURF, mew=2)
     ax.plot(x2, s2.dropped_since_prev, color=ORANGE, lw=2, marker="o", ms=7, mec=SURF, mew=2)
     for xi, a, b in zip(x2, s2.new, s2.dropped_since_prev):
@@ -231,7 +211,7 @@ def trend_chart(master_source, stats_source, out_png, stats_dates=None, latest_s
     ax.text(x2[-1], s2.new.iloc[-1], "  new", color=INK, fontsize=9, va="center")
     ax.text(x2[-1], s2.dropped_since_prev.iloc[-1], "  dropped", color=INK, fontsize=9, va="center")
     ax.set_ylim(0, max(s2.new.max(), s2.dropped_since_prev.max()) * 1.2)
-    title(ax, "New vs dropped listings per month", "Dropped = gone since prior snapshot; new includes returning IDs in latest month")
+    title(ax, "New vs dropped listings per month", "New = id not in prior snapshot (includes returning ids)")
 
     # C: promo share
     ax = axes[1, 0]; x3 = xs(st.snapshot_date)
@@ -254,7 +234,7 @@ def trend_chart(master_source, stats_source, out_png, stats_dates=None, latest_s
     title(ax, "Median asking rent (direct/certain listings)", "Lower end of asking range, single-suite-type listings")
 
     for ax in axes[1]: ax.set_xticks(x3); ax.set_xticklabels([d.strftime("%b %d") for d in x3])
-    for ax in axes[0]: ax.set_xticks(xs(sup.snapshot_date)); ax.set_xticklabels([d.strftime("%b %d") for d in xs(sup.snapshot_date)])
+    for ax in axes[0]: ax.set_xticks(xs(sup0.snapshot_date)); ax.set_xticklabels([d.strftime("%b %d") for d in xs(sup0.snapshot_date)])
     fig.suptitle("Rentfaster market trends: Edmonton metro", x=0.06, ha="left", fontsize=14,
                  fontweight="bold", color=INK)
     fig.tight_layout(rect=(0, 0, 1, 0.95))

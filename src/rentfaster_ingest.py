@@ -7,10 +7,9 @@ Response -> save to file). Multiple payload files per snapshot are supported and
 encouraged (grab enough zoomed-in quadrants/drawn areas to beat the real ~500
 listing cap per response -- the payload's own 'search.max' field claims 800,
 but two independent captures confirmed the server actually truncates at 500
-regardless). Coverage QC is area-based: a draw is complete when it returned
-exactly total2 listings (under the 500 cap); any oversized/truncated draw must
-have its area covered by complete draws or the run warns. Also accepts the
-{"captures": [...]} export format. Warns on property-type filter drift.
+regardless; judge a drawn area's size against its 'total' field vs 500, not
+800). Coverage QC (added 2026-11-04) is draw-completeness based: see
+coverage_report(). The script also reports suite-type coverage vs the site counter).
 
 Outputs (parquet, with CSV mirrors for Excel):
   listings_master.parquet   one row per listing_id (current state + first/last seen)
@@ -112,6 +111,61 @@ KNOWN_PROMO_CODES = {
     "move_in_gift": "promo_move_in_gift",
 }
 
+# Property types dropped at ingest (decided 2026-10-02: Fourplex is no longer
+# captured, so legacy rows are removed rather than left to read as monthly
+# "exits"). Applied to new payloads and purged from any existing snapshots.
+EXCLUDED_TYPES = {"Fourplex"}
+
+# PROVISIONAL persistence weighting (2026-10-02). Informational columns only:
+# nothing in the pipeline filters or weights on them. Revisit with 6+ monthly
+# snapshots before using. See CLAUDE.md decision log.
+PERSISTENCE_CAP = 3
+CONFIDENCE_FACTOR = {"direct": 1.0, "certain": 1.0, "inferred": 0.7, "blended": 0.4}
+CUT_MIN_PCT = 1.0  # smallest price_lo drop counted as a rent cut
+
+
+def _persistence_cols(snaps, master):
+    """Derived, rebuilt-every-ingest columns on the master. Provisional."""
+    dates = sorted(snaps["snapshot_date"].unique())
+    pos = {d: i for i, d in enumerate(dates)}
+    s = snaps.sort_values(["listing_id", "snapshot_date"])
+    s = s.assign(_i=s["snapshot_date"].map(pos))
+
+    # snapshots available since first sighting (denominator for persistence)
+    first_i = s.groupby("listing_id")["_i"].min()
+    last_i = s.groupby("listing_id")["_i"].max()
+    master = master.set_index("listing_id")
+    master["snapshots_since_first_seen"] = len(dates) - first_i.reindex(master.index)
+    # gap: absent from at least one snapshot between first and last sighting
+    span = last_i - first_i + 1
+    master["gap_flag"] = (span.reindex(master.index) > master["n_snapshots"])
+
+    # streak of consecutive snapshots ending at the latest snapshot (0 if inactive)
+    present = {lid: set(g) for lid, g in s.groupby("listing_id")["_i"]}
+    top = len(dates) - 1
+    def streak(lid):
+        n, i = 0, top
+        while i in present[lid]:
+            n, i = n + 1, i - 1
+        return n
+    master["current_streak"] = [streak(l) for l in master.index]
+
+    # rent cuts on price_lo across consecutive OBSERVED prices (gaps bridged)
+    pr = s[s["price_lo"].notna()].copy()
+    pr["prev"] = pr.groupby("listing_id")["price_lo"].shift()
+    pr["pct"] = (pr["price_lo"] - pr["prev"]) / pr["prev"] * 100
+    pr["cut"] = pr["pct"] <= -CUT_MIN_PCT
+    master["n_rent_cuts"] = pr.groupby("listing_id")["cut"].sum().reindex(master.index).fillna(0).astype(int)
+    last_step = pr.groupby("listing_id").tail(1).set_index("listing_id")["cut"]
+    master["lingering_cut"] = last_step.reindex(master.index).fillna(False).astype(bool)
+
+    # provisional composite weight
+    master["persistence_weight"] = (
+        master["n_snapshots"].clip(upper=PERSISTENCE_CAP)
+        * master["rent_confidence"].map(CONFIDENCE_FACTOR).fillna(0.4)
+    ).round(2)
+    return master.reset_index()
+
 def address_from_slug(link):
     """'/properties/8217-130-ave-edmonton-358143' -> '8217 130 ave' (city+id stripped).
     Returns None for generic slugs like 'rentals-edmonton-635135'."""
@@ -207,12 +261,35 @@ def normalize_listing(raw):
 
 # ---------------------------------------------------------------- core
 
-def load_payloads(path):
-    """Return a list of map.json payload dicts from one file.
+def load_payload(path):
+    """Load one raw map.json payload, or a combined {"captures": [...]} file
+    from tools/rf_console_capture.js -- one rfDownload() can hold dozens of
+    sub-captures from a single pan/zoom session. For the combined shape,
+    listings are pooled across every sub-capture; total is the largest single
+    sub-capture total seen (consistent with how ingest_snapshot then takes the
+    max across files); cities is the last non-empty cities list seen, matching
+    the existing last-file-wins merge in ingest_snapshot's outer loop."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and isinstance(data.get("captures"), list):
+        listings, total, cities = [], None, []
+        for payload in data["captures"]:
+            listings.extend(payload.get("listings") or [])
+            t = payload.get("total")
+            if t and (total is None or t > total):
+                total = t
+            if payload.get("cities"):
+                cities = payload["cities"]
+        return listings, total, cities
+    listings = data.get("listings", data if isinstance(data, list) else [])
+    total = data.get("total")
+    cities = data.get("cities") or []  # metro-wide totals, independent of capture coverage
+    return listings, total, cities
 
-    Accepts a raw single map.json response, a bare list of listings, or a
-    capture-tool export of the form {"captures": [payload, payload, ...]}.
-    """
+def load_payloads(path):
+    """Per-draw payload dicts from one file (raw map.json, bare list, or
+    {"captures": [...]}). Needed for per-draw coverage QC; load_payload() above
+    pools them for ingest."""
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict) and isinstance(data.get("captures"), list):
@@ -221,17 +298,17 @@ def load_payloads(path):
         return [{"listings": data}]
     return [data]
 
-def load_payload(path):
-    """Back-compat: merge every payload in a file into (listings, total, cities)."""
-    ps = load_payloads(path)
-    listings = [x for p in ps for x in (p.get("listings") or [])]
-    totals = [p.get("total") for p in ps if p.get("total")]
-    cities = next((p["cities"] for p in ps if p.get("cities")), [])
-    return listings, (max(totals) if totals else None), cities
-
-# Real per-response cap (confirmed 2026-08-10). A draw at/over this is truncated.
+# ---- draw-completeness coverage QC (2026-11-04)
+# Real per-response cap is 500 listing rows. In a payload, 'total' counts SUITE
+# TYPES (confirmed 2026-11-04: sum of each listing's 'units' equals 'total' exactly
+# on every complete draw, e.g. 439 properties / 988 suite types / total 988).
+# 'total2' is the property-row count on small draws but mirrors the suite-type
+# count on larger ones, so it is NOT a reliable completeness test on its own.
+# A draw is COMPLETE when its listings' suite types (sum of units, default 1)
+# reach 'total'. An incomplete draw is acceptable only if its bounding box
+# (search.area) is fully inside the union of complete draws.
 RF_CAP = 500
-ALLOWED_TYPES = {"Apartment", "Townhouse"}  # Triplex/Fourplex dropped 2026-11-04
+ALLOWED_TYPES = {"Apartment", "Townhouse"}  # Triplex/Fourplex not captured
 
 def _bbox(payload):
     """search.area is 'lat_hi,lon_hi,lat_lo,lon_lo' -> (lat_lo, lat_hi, lon_lo, lon_hi)."""
@@ -242,30 +319,20 @@ def _bbox(payload):
         return None
 
 def _draw_complete(payload):
-    """A draw is complete when it returned exactly what the site says it holds
-    and stayed under the cap. total2 is the authoritative count (matches the
-    listings array when the draw is small enough); when a draw is too big,
-    total2 falls back to the inflated 'total', so n != total2 means 'oversized
-    draw', not necessarily 'rows missing' -- coverage is judged by area below."""
-    n = len(payload.get("listings") or [])
-    t = payload.get("total2", payload.get("total"))
-    if t is None:
-        return n < RF_CAP
-    return n < RF_CAP and n == t
+    ls = payload.get("listings") or []
+    total = payload.get("total")
+    if total is None:
+        return len(ls) < RF_CAP
+    suite_types = sum((l.get("units") or 1) for l in ls)
+    return suite_types >= total
 
 def coverage_report(payloads, step=0.001):
-    """Area-based coverage QC across all draws in a snapshot.
-
-    Every draw with n != total2 (or n >= cap) is 'incomplete'. An incomplete
-    draw is resolved if its whole bounding box lies inside the union of
-    complete draws. Returns a dict; cells_uncovered_pct is the share of
-    incomplete-draw area NOT covered by any complete draw (0 = fully covered).
-    """
+    """Area-based coverage QC across all draws in a snapshot. uncovered_pct is the
+    share of incomplete-draw area not covered by any complete draw (0 = covered)."""
     import numpy as np
     complete = [b for p in payloads if _draw_complete(p) and (b := _bbox(p))]
     incomplete = [p for p in payloads if not _draw_complete(p)]
     inc_boxes = [_bbox(p) for p in incomplete]
-    n_no_area = sum(b is None for b in inc_boxes)
     cells = unc = 0
     for b in filter(None, inc_boxes):
         la = np.arange(b[0], b[1], step); lo = np.arange(b[2], b[3], step)
@@ -274,63 +341,96 @@ def coverage_report(payloads, step=0.001):
         for c in complete:
             covered |= (g_la >= c[0]) & (g_la <= c[1]) & (g_lo >= c[2]) & (g_lo <= c[3])
         cells += covered.size; unc += int((~covered).sum())
-    types_bad = sorted({
+    drift = sorted({
         str(sorted(p["search"]["type"])) for p in payloads
         if isinstance(p.get("search", {}).get("type"), list)
         and set(p["search"]["type"]) != ALLOWED_TYPES})
-    return {
-        "n_draws": len(payloads), "n_incomplete": len(incomplete),
-        "n_incomplete_no_area": n_no_area,
-        "uncovered_pct": round(unc / cells, 4) if cells else 0.0,
-        "filter_drift": types_bad,
-    }
+    return {"n_draws": len(payloads), "n_incomplete": len(incomplete),
+            "n_incomplete_no_area": sum(b is None for b in inc_boxes),
+            "uncovered_pct": round(unc / cells, 4) if cells else 0.0,
+            "filter_drift": drift}
 
 def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
-                    metro_city_ids=(2, 43, 33, 34, 39, 31, 36)):
-    """Merge one or more map.json files into one snapshot, dedupe, append to store."""
+                    metro_city_ids=(2, 43, 33, 34, 39, 31, 36, 35),
+                    site_suite_types=None):
+    """Merge one or more map.json files into one snapshot, dedupe, append to store.
+
+    site_suite_types: the number shown by the site's own "Results (N)" badge on
+    the filtered location-search page. This is the only trustworthy coverage
+    denominator -- it is city-wide rather than viewport-bound, and it is
+    denominated in suite types, matching what this function now counts. Pass it
+    whenever you have it; without it, coverage is reported against the largest
+    single captured view, which is a floor, not a real ceiling."""
     snapshot_date = snapshot_date or date.today().isoformat()
     data_dir = Path(data_dir); data_dir.mkdir(parents=True, exist_ok=True)
 
-    rows, payloads, cities_seen = [], [], {}
+    rows, totals, cities_seen, payloads = [], [], {}, []
     for p in payload_files:
-        for pl in load_payloads(p):
-            payloads.append(pl)
-            rows.extend(normalize_listing(x) for x in (pl.get("listings") or []))
-            for c in (pl.get("cities") or []):  # metro-wide; last one wins
-                if c.get("city"):
-                    cities_seen[c["city"]] = c.get("listings")
+        payloads.extend(load_payloads(p))
+        listings, total, cities = load_payload(p)
+        totals.append(total)
+        rows.extend(normalize_listing(x) for x in listings)
+        for c in cities:  # metro-wide, same across quadrant files; last one wins
+            if c.get("city"):
+                cities_seen[c["city"]] = c.get("listings")
 
     df = pd.DataFrame(rows)
     n_raw = len(df)
     df = df.drop_duplicates(subset="listing_id", keep="first")
     df = df[df["listing_id"].notna()]
+    n_excluded = int(df["type"].isin(EXCLUDED_TYPES).sum())
+    df = df[~df["type"].isin(EXCLUDED_TYPES)]
     df["snapshot_date"] = snapshot_date
     n_unique = len(df)
+    if n_excluded:
+        print(f"[{snapshot_date}] excluded {n_excluded} listings of type {sorted(EXCLUDED_TYPES)}")
 
     # Portfolio footprint: how many units this poster has live in this
     # snapshot. Cheap, already-present field (user_id) made filterable/
     # sortable directly rather than requiring a pivot table in Excel.
     df["user_listings_in_snapshot"] = df.groupby("user_id")["listing_id"].transform("count")
 
+    # Coverage is measured in SUITE TYPES, not property rows (confirmed
+    # 2026-08-14): map.json's 'total' counts suite types, and so does the site's
+    # own "Results (N)" badge, while each row here is one property ad carrying an
+    # n_suite_types count. Comparing rows against 'total' is a units mismatch --
+    # it is what made this metric read ~48% when real coverage was ~97%.
+    #
+    # Note the denominator is still only a floor for section/pan captures: it is
+    # the largest single view's suite-type total, and no single view necessarily
+    # covers the whole city. The trustworthy denominator is the site's filtered
+    # "Results (N)" counter, read manually on the location-search page and passed
+    # in as site_suite_types.
+    n_suite_types = int(df["n_suite_types"].fillna(1).sum())
+    claimed_total = site_suite_types or max([t for t in totals if t], default=None)
+    coverage = round(n_suite_types / claimed_total, 3) if claimed_total else None
+    basis = "site Results counter" if site_suite_types else "largest single view (floor only)"
+    print(f"[{snapshot_date}] files={len(payload_files)} raw_rows={n_raw} "
+          f"properties={n_unique} suite_types={n_suite_types} "
+          f"site_total={claimed_total} coverage={coverage} ({basis})")
+    if coverage and coverage < 0.9 and site_suite_types:
+        print("  WARNING: coverage <90% of the site's own filtered Results count. "
+              "Capture more areas and re-run this snapshot.")
+
     cov = coverage_report(payloads)
-    print(f"[{snapshot_date}] files={len(payload_files)} draws={cov['n_draws']} "
-          f"raw_rows={n_raw} unique={n_unique} incomplete_draws={cov['n_incomplete']} "
+    print(f"[{snapshot_date}] draws={cov['n_draws']} incomplete_draws={cov['n_incomplete']} "
           f"uncovered_area={cov['uncovered_pct']:.1%}")
     if cov["uncovered_pct"] > 0 or cov["n_incomplete_no_area"]:
-        print("  WARNING: some area is only covered by incomplete (oversized/truncated) "
-              "draws. Redraw it in smaller boxes (aim for total2 <= ~450).")
+        print("  WARNING: some area is only covered by incomplete (truncated) draws. "
+              "Redraw it in smaller boxes.")
     if cov["filter_drift"]:
         print(f"  WARNING: property-type filter drift in draws: {cov['filter_drift']} "
               f"(expected {sorted(ALLOWED_TYPES)})")
-    odd = sorted(set(df["type"].dropna()) - ALLOWED_TYPES) if "type" in df else []
+    odd = sorted(set(df["type"].dropna()) - ALLOWED_TYPES)
     if odd:
-        print(f"  WARNING: unexpected listing types in data: {odd}")
+        print(f"  WARNING: unexpected listing types in data (kept): {odd}")
 
     # ---- append to snapshots (idempotent per snapshot_date)
     snap_path = data_dir / "snapshots.parquet"
     existing = _load(snap_path)
     if existing is not None:
         existing = existing[existing["snapshot_date"] != snapshot_date]  # re-run safe
+        existing = existing[~existing["type"].isin(EXCLUDED_TYPES)]  # purge legacy rows
         snaps = pd.concat([existing, df], ignore_index=True)
     else:
         snaps = df
@@ -346,6 +446,7 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     latest_snap = snaps["snapshot_date"].max()
     master["active"] = master["last_seen"] == latest_snap
     master = master.reset_index()
+    master = _persistence_cols(snaps, master)
 
     _save(master, data_dir / "listings_master.parquet")
     master.to_csv(data_dir / "listings_master.csv", index=False)
@@ -354,8 +455,9 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     log_path = data_dir / "ingest_log.csv"
     log_row = pd.DataFrame([{
         "snapshot_date": snapshot_date, "files": len(payload_files),
-        "draws": cov["n_draws"], "incomplete_draws": cov["n_incomplete"],
         "raw_rows": n_raw, "unique_listings": n_unique,
+        "site_total": claimed_total, "coverage": coverage,
+        "draws": cov["n_draws"], "incomplete_draws": cov["n_incomplete"],
         "uncovered_area_pct": cov["uncovered_pct"],
         "filter_drift": ";".join(cov["filter_drift"]),
         "run_at": pd.Timestamp.now().isoformat(timespec="seconds"),
