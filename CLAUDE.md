@@ -302,6 +302,9 @@ rf_data/
 | 2026-11-04 | Property-type filter is now Apartment + Townhouse only. Triplex and Fourplex dropped from the capture convention (supersedes the 2026-07-30 filter and the 2026-08-10 "confirm Triplex/Fourplex" note) |
 | 2026-11-04 | Nov capture QA (47 + 20 draws, 1,307 unique listings, all Apartment/Townhouse). Three downtown draws reported `total2` 988/1,168/1,183 against 439/500/500 returned. 20 smaller redraws over the same core were all complete (n == `total2`) and added 0 new listings; every listing from the three oversized draws sits inside a complete draw, so no gap. Inference: when a draw is too large, `total2` falls back to the inflated `total` (988/439 = 2.25x, matching the usual total/total2 ratio), so `total2 != n` can mean "oversized draw" not "missing rows". Rule: judge coverage by whether every area is inside some draw with n == `total2`, not by a single draw's numbers. Ingest coverage calc should use this |
 | 2026-11-04 | Ingested Nov snapshot (2 capture files, 67 draws, 9,525 raw rows -> 1,307 unique listings, 0% uncovered area). Rewrote coverage calc in `rentfaster_ingest.py` per the rule above; ingest dedupes on listing_id itself (keep first), no pre-dedupe needed; ingest_log now idempotent per snapshot_date |
+| 2026-11-04 | Oct (2026-10-02) -> Nov (2026-11-04) comparison, from the user's listings_master_3.csv (Aug/Sep/Oct history) + Nov ingest. Supply 1,257 -> 1,307 (956 carried, 301 gone, 351 arrived). Clean cohort (direct/certain both months, same beds_lo, n=400): 64% unchanged, 29% cut, 7% raised, mean -1.3%, median cut -4.9% / raise +5.7%. Cuts by beds: 1BR 19%, 2BR 30%, 3BR 35%. Median asking 1BR $1,193->$1,175, 2BR $1,595->$1,544, 3BR flat $1,950. Rent-special share of listings 20.7% -> 15.1% (88 dropped vs 32 added on carried listings), any-promo share flat 23.4% -> 24.2%, other_promotion flat. Arrived listings ask ~6% less than ones that left (1BR $1,175 vs $1,250; 2BR $1,550 vs $1,650). Soft spots: Heritage Valley, Orchards, Strathcona, West Jasper Place; Downtown/Oliver holding (n=8-18 each, indicative only). Poster 25428 (69 listings) cut 8 of 10, avg -8.2%: single accounts can drive community averages. Caveats: Oct has no coverage QC; asking rents only |
+| 2026-11-04 | Evidence on Open Question 7: 73 listing_ids seen Aug/Sep, absent Oct, present again Nov, so IDs persist across dormancy at least sometimes (cannot rule out occasional reissue). Supply reconstruction from first/last_seen overcounts such returners across the gap; `supply_series(..., latest_snapshot=)` appends the newest snapshot exactly instead |
+| 2026-11-04 | Added `src/snapshot_compare.py` (separate from ingest per 2026-08-04 decision): `compare()` (clean-cohort rent changes, promo flips, composition, CSVs) and `trend_chart()`. listings_master only keeps each listing's latest row, so rent/promo history before Oct is not recoverable from it; a real multi-month rent/promo series needs the full `snapshots.csv` from the Colab store (not yet in this repo). The Colab ingest also has extra columns (gap_flag, current_streak, n_rent_cuts, lingering_cut, persistence_weight) not in this repo's script; reconcile when it is shared |
 
 ## 9. Open questions
 
@@ -312,7 +315,7 @@ rf_data/
 4. `f` field interpretation: confirm against more payloads.
 5. Detail-page JSON schema: document when first captured.
 6. Suite mix gaps (~3,100 buildings): manual fill prioritization TBD.
-7. Listing ID stability on dormancy/reactivation: unknown whether a listing_id
+7. Listing ID stability on dormancy/reactivation (partial evidence 2026-11-04: 73 IDs returned after a month's gap, see Decision Log): unknown whether a listing_id
    persists when a unit goes quiet and is re-listed later, or whether Rentfaster
    issues a new id for what's physically the same unit. Can't be tested from a
    single snapshot -- needs 2-3+ months of real captures to observe empirically
@@ -340,6 +343,7 @@ RF-Scraping-Project/
   README.md
   src/
     rentfaster_ingest.py     <- exists (step 1)
+    snapshot_compare.py      <- exists: month-over-month compare() + trend_chart(); reads ingest output only
     geocode_inventory.py     <- step 2
     match_engine.py          <- step 3
     rent_table.py            <- step 4
