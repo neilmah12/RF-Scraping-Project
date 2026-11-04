@@ -55,8 +55,8 @@ Refi screening is therefore a JOIN, not a build.
 ## 4. Rentfaster data source
 
 **No automated scraping.** Rentfaster has bot protection; the workflow is a manual
-monthly console capture. Neil filters the map (Apartment + Townhouse + Triplex +
-Fourplex; condo units excluded as non-market-rent), opens DevTools Network tab,
+monthly console capture. Neil filters the map (Apartment + Townhouse only; Triplex and
+Fourplex dropped 2026-11-04; condo units excluded as non-market-rent), opens DevTools Network tab,
 and saves map.json responses. Pipeline ingests whatever files he saves. Keep it
 this way — do not add automated fetching.
 
@@ -113,7 +113,7 @@ Known quirks:
 - **Map filter (property type checkboxes) can silently drift between draws
   within the same session** — observed 2026-08-10 across several captures in
   one sitting: some included Condo Unit (against the documented
-  Apartment+Townhouse+Triplex+Fourplex/no-condo convention), one dropped
+  Apartment+Townhouse/no-condo convention (Triplex/Fourplex dropped 2026-11-04)), one dropped
   Townhouse and Triplex entirely. This is a structural gap, not a coverage
   problem — a dropped property type is invisible for that whole quadrant, and
   the coverage percentage can't catch it since it's computed against whatever
@@ -295,6 +295,8 @@ rf_data/
 | 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
 | 2026-08-10 | Found `total`/`total2` can diverge (previously always identical); `total2` matches the real `listings` array length when they differ, `total` doesn't. Also observed map filter (property type checkboxes) drifting between draws within one session -- re-check filter before every draw, not just once per session. `ingest_snapshot`'s coverage calc still only reads `total`, not yet updated to prefer `total2` |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
+| 2026-11-04 | Property-type filter is now Apartment + Townhouse only. Triplex and Fourplex dropped from the capture convention (supersedes the 2026-07-30 filter and the 2026-08-10 "confirm Triplex/Fourplex" note) |
+| 2026-11-04 | Nov capture QA (47 + 20 draws, 1,307 unique listings, all Apartment/Townhouse). Three downtown draws reported `total2` 988/1,168/1,183 against 439/500/500 returned. 20 smaller redraws over the same core were all complete (n == `total2`) and added 0 new listings; every listing from the three oversized draws sits inside a complete draw, so no gap. Inference: when a draw is too large, `total2` falls back to the inflated `total` (988/439 = 2.25x, matching the usual total/total2 ratio), so `total2 != n` can mean "oversized draw" not "missing rows". Rule: judge coverage by whether every area is inside some draw with n == `total2`, not by a single draw's numbers. Ingest coverage calc should use this |
 
 ## 9. Open questions
 
