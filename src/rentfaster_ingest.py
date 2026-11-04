@@ -179,6 +179,69 @@ def address_from_slug(link):
         return None
     return slug.replace("-", " ").upper()
 
+
+# ---- promo terms parsed from the listing title (added 2026-11-04)
+# map.json only carries the promo CODE (rent_special / other_promotion /
+# move_in_gift), never its terms. Landlords often put the offer in the title, so
+# this extracts what it can. Title text is NOT proof the promo is active: use it
+# together with the code flags. Coverage is partial (~1/5 of rent_special listings).
+_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "half": 0.5, "a": 1}
+_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_RE_MFREE = re.compile(
+    r"(up\s+to\s+)?(\d+(?:\.\d+)?|one|two|three|four|half)\s*-?\s*months?(?:'?s)?\s+(?:of\s+)?(?:rent\s+)?free(?!\s*utilit)", re.I)
+_RE_FIRST = re.compile(r"\b(?:first|1st)\s+months?(?:'?s)?\s+(?:rent\s+)?free", re.I)
+_RE_NAMED = re.compile(r"\brent\s+free\s+(?:in\s+)?(?:%s)\w*|\b(?:%s)\w*\s+rent\s+free" % (_MONTHS, _MONTHS), re.I)
+_RE_DOLLARS = re.compile(r"\$\s?([\d,]{2,6})\s+(?:off|move[\s-]*in|bonus|discount|credit|gift|prepaid)", re.I)
+_RE_UPTO_D = re.compile(r"up\s+to\s+\$\s?([\d,]{2,6})", re.I)
+_RE_PCT = re.compile(r"(\d{1,2})\s*%\s*off", re.I)
+_RE_PERK = re.compile(
+    r"free\s+(?:high[\s-]*speed\s+)?(internet|wi-?fi|cable|parking|utilit\w+|laundry|storage|heat|power|water)"
+    r"|(utilit\w+|internet|cable)\s+(?:are\s+)?free|\d+\s+months?\s+(?:of\s+)?(?:free\s+)?(parking)", re.I)
+_RE_DEPOSIT = re.compile(r"(?:reduced|waived?|no|half|1/2\s*off|\$\s?\d+)\s+(?:security\s+)?deposits?|deposits?\s+(?:from|starting|only|\$)", re.I)
+_RE_VAGUE = re.compile(
+    r"\bincentives?\b|\bpromo(?:tion)?s?\b|limited\s+time|special\s+(?:offer|pricing|incentive|rate)|"
+    r"move[\s-]*in\s+(?:bonus|incentive|special|discount)|\bbonus(?:es)?\b|\boffers?\b|ask\s+about|"
+    r"specials?\b", re.I)
+
+def parse_promo_terms(title):
+    """Title -> dict(special_type, months_free, months_free_upto, promo_dollars, promo_components).
+    special_type precedence: months_free > cash_off > percent_off > free_perk >
+    deposit > unspecified_promo > none. promo_components lists everything matched."""
+    t = (title or "")
+    comps, months, upto, dollars = [], None, False, None
+    vals = []
+    for m in _RE_MFREE.finditer(t):
+        raw = m.group(2).lower()
+        vals.append((float(_NUM.get(raw, raw)), bool(m.group(1))))
+    if _RE_FIRST.search(t): vals.append((1.0, False))
+    if _RE_NAMED.search(t): vals.append((1.0, False))
+    if vals:
+        months = max(v for v, _ in vals)
+        upto = any(u for v, u in vals if v == months)
+        comps.append("months_free")
+    ds = [int(x.replace(",", "")) for x in _RE_DOLLARS.findall(t)] + \
+         [int(x.replace(",", "")) for x in _RE_UPTO_D.findall(t)]
+    if ds:
+        dollars = max(ds); comps.append("cash_off")
+    if _RE_PCT.search(t): comps.append("percent_off")
+    perks = sorted({("utilities" if (a or b or c).lower().startswith("utilit") else (a or b or c).lower())
+                    for a, b, c in _RE_PERK.findall(t) if (a or b or c)})
+    if perks: comps.append("free_perk:" + "+".join(perks))
+    if _RE_DEPOSIT.search(t): comps.append("deposit")
+    if _RE_VAGUE.search(t) and not comps: comps.append("unspecified_promo")
+    primary = next((c.split(":")[0] for c in comps), "none")
+    return {"special_type": primary, "months_free": months, "months_free_upto": upto if months else None,
+            "promo_dollars": dollars, "promo_components": ",".join(comps)}
+
+_PROMO_TERM_COLS = ["special_type", "months_free", "months_free_upto", "promo_dollars", "promo_components"]
+
+def add_promo_terms(df):
+    """Fill/refresh the title-parsed promo columns on a DataFrame (idempotent)."""
+    terms = df["title"].map(parse_promo_terms).apply(pd.Series)
+    for c in _PROMO_TERM_COLS:
+        df[c] = terms[c].values
+    return df
+
 def normalize_listing(raw):
     beds_lo, den_lo = parse_beds(raw.get("beds"))
     beds_hi, den_hi = parse_beds(raw.get("beds2"))
@@ -257,6 +320,7 @@ def normalize_listing(raw):
         "promotions_raw": ",".join(promo_list),
         **promo_flags,
         "verified": raw.get("personaVerified"),
+        **parse_promo_terms((raw.get("title") or "").strip()[:200]),
     }
 
 # ---------------------------------------------------------------- core
@@ -431,6 +495,8 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     if existing is not None:
         existing = existing[existing["snapshot_date"] != snapshot_date]  # re-run safe
         existing = existing[~existing["type"].isin(EXCLUDED_TYPES)]  # purge legacy rows
+        if "special_type" not in existing.columns:  # migrate pre-2026-11-04 store
+            existing = add_promo_terms(existing.copy())
         snaps = pd.concat([existing, df], ignore_index=True)
     else:
         snaps = df
