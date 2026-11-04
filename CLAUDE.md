@@ -184,7 +184,11 @@ documented; capture an example when first needed.
   always written for Excel
 - Parsing handled: "studio"→0 beds, "+den" flag, junk prices (<$100 → null),
   address from slug (city + id stripped), promo flags
-- Coverage report vs site `total`; warns below 90%
+- Coverage QC (updated 2026-11-04): area-based, not vs site `total`. Draw is
+  complete if it returned exactly `total2` and n < 500; incomplete draws warn
+  unless their bbox (`search.area`) is fully inside the union of complete draws
+  (`uncovered_area_pct` in ingest_log). Also warns on property-type filter drift
+  (`search.type` != Apartment+Townhouse). Accepts `{"captures":[...]}` exports.
 
 ### Matching design (step 3, agreed)
 
@@ -297,6 +301,7 @@ rf_data/
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
 | 2026-11-04 | Property-type filter is now Apartment + Townhouse only. Triplex and Fourplex dropped from the capture convention (supersedes the 2026-07-30 filter and the 2026-08-10 "confirm Triplex/Fourplex" note) |
 | 2026-11-04 | Nov capture QA (47 + 20 draws, 1,307 unique listings, all Apartment/Townhouse). Three downtown draws reported `total2` 988/1,168/1,183 against 439/500/500 returned. 20 smaller redraws over the same core were all complete (n == `total2`) and added 0 new listings; every listing from the three oversized draws sits inside a complete draw, so no gap. Inference: when a draw is too large, `total2` falls back to the inflated `total` (988/439 = 2.25x, matching the usual total/total2 ratio), so `total2 != n` can mean "oversized draw" not "missing rows". Rule: judge coverage by whether every area is inside some draw with n == `total2`, not by a single draw's numbers. Ingest coverage calc should use this |
+| 2026-11-04 | Ingested Nov snapshot (2 capture files, 67 draws, 9,525 raw rows -> 1,307 unique listings, 0% uncovered area). Rewrote coverage calc in `rentfaster_ingest.py` per the rule above; ingest dedupes on listing_id itself (keep first), no pre-dedupe needed; ingest_log now idempotent per snapshot_date |
 
 ## 9. Open questions
 

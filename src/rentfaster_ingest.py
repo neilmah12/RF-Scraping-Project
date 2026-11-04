@@ -7,8 +7,10 @@ Response -> save to file). Multiple payload files per snapshot are supported and
 encouraged (grab enough zoomed-in quadrants/drawn areas to beat the real ~500
 listing cap per response -- the payload's own 'search.max' field claims 800,
 but two independent captures confirmed the server actually truncates at 500
-regardless; judge a drawn area's size against its 'total' field vs 500, not
-800. The script reports coverage vs the 'total' field).
+regardless). Coverage QC is area-based: a draw is complete when it returned
+exactly total2 listings (under the 500 cap); any oversized/truncated draw must
+have its area covered by complete draws or the run warns. Also accepts the
+{"captures": [...]} export format. Warns on property-type filter drift.
 
 Outputs (parquet, with CSV mirrors for Excel):
   listings_master.parquet   one row per listing_id (current state + first/last seen)
@@ -205,13 +207,83 @@ def normalize_listing(raw):
 
 # ---------------------------------------------------------------- core
 
-def load_payload(path):
+def load_payloads(path):
+    """Return a list of map.json payload dicts from one file.
+
+    Accepts a raw single map.json response, a bare list of listings, or a
+    capture-tool export of the form {"captures": [payload, payload, ...]}.
+    """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    listings = data.get("listings", data if isinstance(data, list) else [])
-    total = data.get("total")
-    cities = data.get("cities") or []  # metro-wide totals, independent of capture coverage
-    return listings, total, cities
+    if isinstance(data, dict) and isinstance(data.get("captures"), list):
+        return data["captures"]
+    if isinstance(data, list):
+        return [{"listings": data}]
+    return [data]
+
+def load_payload(path):
+    """Back-compat: merge every payload in a file into (listings, total, cities)."""
+    ps = load_payloads(path)
+    listings = [x for p in ps for x in (p.get("listings") or [])]
+    totals = [p.get("total") for p in ps if p.get("total")]
+    cities = next((p["cities"] for p in ps if p.get("cities")), [])
+    return listings, (max(totals) if totals else None), cities
+
+# Real per-response cap (confirmed 2026-08-10). A draw at/over this is truncated.
+RF_CAP = 500
+ALLOWED_TYPES = {"Apartment", "Townhouse"}  # Triplex/Fourplex dropped 2026-11-04
+
+def _bbox(payload):
+    """search.area is 'lat_hi,lon_hi,lat_lo,lon_lo' -> (lat_lo, lat_hi, lon_lo, lon_hi)."""
+    try:
+        n, e, s_, w = map(float, payload["search"]["area"].split(","))
+        return (min(s_, n), max(s_, n), min(w, e), max(w, e))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+def _draw_complete(payload):
+    """A draw is complete when it returned exactly what the site says it holds
+    and stayed under the cap. total2 is the authoritative count (matches the
+    listings array when the draw is small enough); when a draw is too big,
+    total2 falls back to the inflated 'total', so n != total2 means 'oversized
+    draw', not necessarily 'rows missing' -- coverage is judged by area below."""
+    n = len(payload.get("listings") or [])
+    t = payload.get("total2", payload.get("total"))
+    if t is None:
+        return n < RF_CAP
+    return n < RF_CAP and n == t
+
+def coverage_report(payloads, step=0.001):
+    """Area-based coverage QC across all draws in a snapshot.
+
+    Every draw with n != total2 (or n >= cap) is 'incomplete'. An incomplete
+    draw is resolved if its whole bounding box lies inside the union of
+    complete draws. Returns a dict; cells_uncovered_pct is the share of
+    incomplete-draw area NOT covered by any complete draw (0 = fully covered).
+    """
+    import numpy as np
+    complete = [b for p in payloads if _draw_complete(p) and (b := _bbox(p))]
+    incomplete = [p for p in payloads if not _draw_complete(p)]
+    inc_boxes = [_bbox(p) for p in incomplete]
+    n_no_area = sum(b is None for b in inc_boxes)
+    cells = unc = 0
+    for b in filter(None, inc_boxes):
+        la = np.arange(b[0], b[1], step); lo = np.arange(b[2], b[3], step)
+        g_la, g_lo = np.meshgrid(la, lo, indexing="ij")
+        covered = np.zeros(g_la.shape, dtype=bool)
+        for c in complete:
+            covered |= (g_la >= c[0]) & (g_la <= c[1]) & (g_lo >= c[2]) & (g_lo <= c[3])
+        cells += covered.size; unc += int((~covered).sum())
+    types_bad = sorted({
+        str(sorted(p["search"]["type"])) for p in payloads
+        if isinstance(p.get("search", {}).get("type"), list)
+        and set(p["search"]["type"]) != ALLOWED_TYPES})
+    return {
+        "n_draws": len(payloads), "n_incomplete": len(incomplete),
+        "n_incomplete_no_area": n_no_area,
+        "uncovered_pct": round(unc / cells, 4) if cells else 0.0,
+        "filter_drift": types_bad,
+    }
 
 def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
                     metro_city_ids=(2, 43, 33, 34, 39, 31, 36)):
@@ -219,14 +291,14 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     snapshot_date = snapshot_date or date.today().isoformat()
     data_dir = Path(data_dir); data_dir.mkdir(parents=True, exist_ok=True)
 
-    rows, totals, cities_seen = [], [], {}
+    rows, payloads, cities_seen = [], [], {}
     for p in payload_files:
-        listings, total, cities = load_payload(p)
-        totals.append(total)
-        rows.extend(normalize_listing(x) for x in listings)
-        for c in cities:  # metro-wide, same across quadrant files; last one wins
-            if c.get("city"):
-                cities_seen[c["city"]] = c.get("listings")
+        for pl in load_payloads(p):
+            payloads.append(pl)
+            rows.extend(normalize_listing(x) for x in (pl.get("listings") or []))
+            for c in (pl.get("cities") or []):  # metro-wide; last one wins
+                if c.get("city"):
+                    cities_seen[c["city"]] = c.get("listings")
 
     df = pd.DataFrame(rows)
     n_raw = len(df)
@@ -240,13 +312,19 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     # sortable directly rather than requiring a pivot table in Excel.
     df["user_listings_in_snapshot"] = df.groupby("user_id")["listing_id"].transform("count")
 
-    claimed_total = max([t for t in totals if t], default=None)
-    coverage = round(n_unique / claimed_total, 3) if claimed_total else None
-    print(f"[{snapshot_date}] files={len(payload_files)} raw_rows={n_raw} "
-          f"unique={n_unique} site_total={claimed_total} coverage={coverage}")
-    if coverage and coverage < 0.9:
-        print("  WARNING: coverage <90% of site total. Capture more zoomed-in "
-              "quadrant payloads and re-run this snapshot.")
+    cov = coverage_report(payloads)
+    print(f"[{snapshot_date}] files={len(payload_files)} draws={cov['n_draws']} "
+          f"raw_rows={n_raw} unique={n_unique} incomplete_draws={cov['n_incomplete']} "
+          f"uncovered_area={cov['uncovered_pct']:.1%}")
+    if cov["uncovered_pct"] > 0 or cov["n_incomplete_no_area"]:
+        print("  WARNING: some area is only covered by incomplete (oversized/truncated) "
+              "draws. Redraw it in smaller boxes (aim for total2 <= ~450).")
+    if cov["filter_drift"]:
+        print(f"  WARNING: property-type filter drift in draws: {cov['filter_drift']} "
+              f"(expected {sorted(ALLOWED_TYPES)})")
+    odd = sorted(set(df["type"].dropna()) - ALLOWED_TYPES) if "type" in df else []
+    if odd:
+        print(f"  WARNING: unexpected listing types in data: {odd}")
 
     # ---- append to snapshots (idempotent per snapshot_date)
     snap_path = data_dir / "snapshots.parquet"
@@ -276,12 +354,16 @@ def ingest_snapshot(payload_files, snapshot_date=None, data_dir="rf_data",
     log_path = data_dir / "ingest_log.csv"
     log_row = pd.DataFrame([{
         "snapshot_date": snapshot_date, "files": len(payload_files),
+        "draws": cov["n_draws"], "incomplete_draws": cov["n_incomplete"],
         "raw_rows": n_raw, "unique_listings": n_unique,
-        "site_total": claimed_total, "coverage": coverage,
+        "uncovered_area_pct": cov["uncovered_pct"],
+        "filter_drift": ";".join(cov["filter_drift"]),
         "run_at": pd.Timestamp.now().isoformat(timespec="seconds"),
     }])
     if log_path.exists():
-        log_row = pd.concat([pd.read_csv(log_path), log_row], ignore_index=True)
+        prev = pd.read_csv(log_path, dtype={"snapshot_date": str})
+        prev = prev[prev["snapshot_date"] != snapshot_date]  # re-run safe
+        log_row = pd.concat([prev, log_row], ignore_index=True)
     log_row.to_csv(log_path, index=False)
 
     # ---- city-wide totals (independent of this run's quadrant capture coverage)
