@@ -32,6 +32,34 @@ usable and what is not.
    each page takes to load, and whether you hit any friction (challenge page,
    rate limiting, login prompts).
 
+## How the monthly run will work (context, not your job)
+The monthly detail pass will NOT use you. It uses `tools/rf_detail_capture.user.js`
+v1.5, a Tampermonkey userscript with an opt-in queue mode:
+1. Each month Neil pulls map.json by hand and the data is ingested.
+2. `src/build_detail_queue.py` writes `detail_queue_<date>.csv`, a prioritised list
+   of listing URLs: Neil's own list, new blended/inferred listings, blended/inferred
+   listings whose price range changed, stale blended/inferred ones, then new
+   clear-rent listings. Listings with a detail capture in the last 30 days are left out.
+3. Neil loads the CSV in the userscript panel and presses Start with a page count.
+   The script opens each URL in the same tab, saves the page's JSON-LD and
+   promotions block, waits a random 30 to 90 seconds (5% chance of a 2 to 4 minute
+   rest), and moves on. Daily cap 150 pages, per-session limit set on Start.
+4. It stops, and does not try to get around anything, on a CAPTCHA or "verify you
+   are human" page, HTTP 403 or 429, "too many requests", 5 pages in a row with no
+   data, full storage, the daily cap, or if Neil navigates off the queue.
+It was tested only against a mocked site. It has never run on the live site.
+
+Because of that, please also assess queue mode from what you observe:
+- Roughly how long after navigation is the JSON-LD present in the page (the script
+  waits about 2.5 seconds before judging a page)? Any pages where it arrives late?
+- What does a removed or expired listing look like (title, status, redirect)? The
+  script treats 404 or "not found / no longer available" as `gone`.
+- Are there signs of bot protection on this site (challenge scripts, cookies set,
+  rate-limit headers, redirects) that the stop rules above would miss?
+- Is 30 to 90 seconds and 150 pages a day reasonable, or would you suggest
+  different numbers, given what you see?
+You are only observing for this. Do not install or run the userscript yourself.
+
 ## Scope and limits (set by Neil for this session only)
 Neil has chosen to relax the project's usual "manual only" rule for this discovery
 step so you can navigate yourself. The limits below still apply:
@@ -53,7 +81,8 @@ step so you can navigate yourself. The limits below still apply:
 ## Attach
 - `CLAUDE.md` (Section 0 handoff map, Section 4 data source, the 2026-11-04 and
   2026-11-12 decision log rows on the detail schema and Altairus).
-- `tools/rf_detail_capture.user.js` (what the userscript keeps today).
+- `tools/rf_detail_capture.user.js` (v1.5: what the userscript keeps today, and the queue mode).
+- `src/build_detail_queue.py` (how the queue is prioritised).
 - One sample `map.json` payload and one sample `rf_detail_*.json` file (Neil will
   attach from his files).
 - `detail_queue_<date>.csv` (the monthly queue; use it only to pick the sample).
@@ -80,6 +109,7 @@ Return a short report with these sections:
    and whether the stored JSON-LD would have captured it.
 4. **Feasibility of a monthly queue pass**: load time per page, friction seen,
    and your recommendation on pacing and daily page cap.
-5. **Open questions for Neil.**
+5. **Review of queue mode**: answers to the four questions in "How the monthly run will work".
+6. **Open questions for Neil.**
 
 Keep raw JSON out of the report except short key lists and a few illustrative values.
