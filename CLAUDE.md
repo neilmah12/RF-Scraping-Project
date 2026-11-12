@@ -55,16 +55,50 @@ Refi screening is therefore a JOIN, not a build.
 ## 4. Rentfaster data source
 
 **No automated scraping.** Rentfaster has bot protection; the workflow is a manual
-monthly console capture. Neil filters the map (Apartment + Townhouse only; Triplex and
-Fourplex dropped 2026-11-04; condo units excluded as non-market-rent), opens DevTools Network tab,
-and saves map.json responses. Pipeline ingests whatever files he saves. Keep it
-this way — do not add automated fetching.
+monthly console capture. Neil filters the map (Apartment + Townhouse only;
+Triplex, Fourplex, and condo units excluded — Triplex dropped 2026-08-11,
+Fourplex dropped 2026-09-10, neither considered core to the multifamily
+inventory), opens DevTools Network tab (or uses the console
+capture helper below), and saves map.json responses. Pipeline ingests whatever
+files he saves. Keep it this way — do not add automated fetching: every
+capture must still originate from Neil manually panning/zooming/drawing on the
+map in a real browser session. Nothing may issue its own requests to
+Rentfaster or drive the map without him.
+
+### Console capture helper (tools/rf_console_capture.js, added 2026-08-11)
+
+Removes the manual "open Network tab, find the map.json request, Save
+Response As" step per capture — it does not remove or automate the panning
+itself. Paste the script into the DevTools console once per session; it hooks
+`fetch`/`XMLHttpRequest` on the page and recognizes a response as a capture by
+its shape (`listings` array + `search` object), not by URL, so it works
+regardless of which transport the map uses. Every matching response the
+browser receives while Neil pans/zooms/draws gets stored in memory with a
+timestamp, unless it contains zero listing ids not already captured this
+session (a slow pan/zoom fires a new map.json on nearly every small viewport
+shift, mostly re-fetching listings already seen — those are silently dropped
+and tallied in a skip counter rather than bloating the download and QC output
+with pure duplicates; a response with even one new id is still kept in full).
+`rfStatus()` shows what's accumulated so far plus the skip count;
+`rfDownload()` downloads everything kept from the session as one combined
+file (`rf_captures_<timestamp>.json`, shape `{"captures": [payload, ...]}`);
+`rfClear()` wipes memory (captures, seen-id set, skip counter) without
+needing a page reload. Captures live only in page memory — reloading the tab
+loses anything not yet downloaded.
+
+`check_capture.py` understands both shapes: a single raw map.json payload
+(the original per-draw file) or a combined `{"captures": [...]}` file, QC'ing
+each sub-capture individually and reporting cross-capture overlap same as it
+already does across separate files. No dedup happens in the browser — the
+existing id-based dedup in `ingest_snapshot` (and the overlap reporting in
+`check_capture.py`) already handles it, same as overlapping hand-drawn
+sections always have.
 
 ### map.json schema (documented 2026-07-30)
 
 Per listing: `id`/`ref_id` (stable listing ID), `userId`, `latitude`, `longitude`,
 `city`, `city_id` (2=Edmonton, 43=St. Albert, 33=Sherwood Park, 34=Spruce Grove,
-39=Leduc, 31=Fort Sask, 36=Beaumont), `community`, `type`, `intro` (display
+39=Leduc, 31=Fort Sask, 36=Beaumont, 35=Stony Plain), `community`, `type`, `intro` (display
 address, sometimes empty), `link` (slug contains civic address), `date`
 (posted/renewed — NOT a days-on-market origin), `availability`/`a`, `units`
 (count of distinct suite types advertised), `beds`/`beds2` (range, values incl
@@ -90,28 +124,67 @@ Known quirks:
   Confirmed 2026-07-30: `mapRole` (silver/highlighted) only ever appears when
   `f==2`; `f==0`/`f==1` always have `mapRole=None`. Consistent with `f` being
   a paid display tier, not a furnished flag.
-- **Real per-response cap is 500 listings, not the 800 implied by `search.max`.**
+- **Real per-response cap is 500 PROPERTY LISTINGS, not the 800 implied by
+  `search.max`, and not denominated in the same unit as `total` (see below).**
   Confirmed 2026-08-10 across two independent captures: both returned exactly
   500 listings regardless of `total`/drawn area size, even though `search.max`
   reports `"800"` in the payload. Judge whether a drawn/zoomed area is small
-  enough by checking its `total` field against 500 (aim comfortably under, e.g.
-  ~450, since 500-vs-500 at the boundary is ambiguous — can't tell if you got
-  everything or got truncated right at the edge). `total` field gives the true
-  count for the current filtered view (e.g. 2,496 citywide, 2,251 for a large
-  draw). Multiple zoomed-in quadrant/draw-tool captures per month are required
-  to stay under the real cap. Ingest script reports coverage and warns <90%.
-- **`total` and `total2` can diverge; when they do, `total2` matches the actual
-  `listings` array length, not `total`.** Confirmed 2026-08-10 on a small
-  draw-tool capture (`total: 154`, `total2: 89`, `listings` length 89). In
-  every earlier capture the two fields were identical, so this wasn't visible
-  until a smaller/narrower-filtered draw exposed it. Use `total2` (or
-  `min(total, total2)`) as the authoritative "true count for this view" when
-  checking coverage, not `total` alone. Not yet reflected in `ingest_snapshot`'s
-  coverage calculation, which currently only reads `total` — worth fixing
-  before relying on the coverage warning for captures where the two might
-  differ. UPDATE 2026-11-04: `total` is a suite-type count (sum of `units`), so
-  `total2` is not the authority; completeness is judged by sum(units) >= `total`
-  (see Decision Log 2026-11-04). Implemented in `coverage_report()`.
+  enough by checking the number of property rows returned against 500 (aim
+  comfortably under, e.g. ~450, since 500-vs-500 at the boundary is ambiguous
+  — can't tell if you got everything or got truncated right at the edge). Do
+  NOT judge it by `total`, which is a suite-type count and runs roughly 2x the
+  property count. Multiple zoomed-in quadrant/draw-tool captures per month are
+  required to stay under the real cap.
+- **`total` counts SUITE TYPES, not property listings. This is the single most
+  important thing to know about the payload** (established 2026-08-14; it
+  overturns roughly three weeks of wrong conclusions recorded below and above).
+  `sum(units)` across the returned listings equals `total` exactly in 169 of
+  173 captures in the 2026-08-11 pull -- and the 4 exceptions are precisely the
+  captures that hit the 500-property cap, where the array (and so the sum) was
+  cut short. Independently confirmed on a location-search capture: 457 property
+  rows, `sum(units)` = 628, `total` = 628. The site's own "Results (N)" badge
+  uses the same suite-type grain, which is why it reads far higher than the
+  number of map pins.
+  Practical rules:
+    - one row in `listings` = one PROPERTY ad (one map pin), carrying a `units`
+      count of how many distinct suite types it advertises
+    - `total` = suite types in the current view
+    - the 500 cap applies to PROPERTY rows returned, not to suite types
+    - to test completeness: `sum(units) == total`. Never compare `len(listings)`
+      against `total` -- that is a units mismatch (properties vs suite types)
+      and it is what produced every bogus "SHORT" warning in this project.
+    - to compare captured data against the site's Results counter, sum `units`
+      (i.e. `n_suite_types` in the export), do NOT count rows.
+- **`total2` is unreliable and should not be used for completeness.** It equals
+  the property-row count on draw-tool captures (NW section: `total` 153 suite
+  types, `total2` 80 properties, array 80) but simply repeats the suite-type
+  `total` on plain zoom/pan captures (`total` 921, `total2` 921, 426 property
+  rows covering exactly 921 suite types). Prior entries here theorized that
+  `total` counted the drawn shape's bounding box while `total2` counted the
+  polygon, citing a West Central capture whose returned listings stopped 3.8 km
+  short of the bbox's west edge. That empty strip was real, but it was not the
+  cause of the number gap: `sum(units)` for that same capture is 746, exactly
+  matching its `total` of 746. The bbox-vs-polygon hypothesis is withdrawn.
+- **The "sub-cap truncation pattern" recorded 2026-08-13 never existed.** Those
+  captures (426 of a reported 921, 406 of 904, 374 of 836, all on
+  `"e": "zoom_changed"` views) were complete: 426 property rows covering exactly
+  921 suite types, 406 covering 904, 374 covering 836. They were flagged only
+  because the QC script compared property rows against a suite-type total. The
+  speculated mechanism (the map front end thinning results at certain zoom
+  levels) is withdrawn -- there is no evidence for it. The only genuine
+  truncation mode remains the 500-property hard cap, which affected 4 captures
+  in the 2026-08-11 pull, all early wide zoomed-out views.
+- **No top-level `cities` field on draw-tool captures.** Present on the earlier
+  whole-city payloads (that's where `city_totals.csv` comes from), absent from
+  the 2026-08-11 NW draw. Section-by-section captures therefore lose the free
+  metro-wide coverage cross-check — take one unfiltered whole-city capture per
+  month alongside the sections if that cross-check is wanted.
+- Fields present in map.json but not yet used: `title` (listing headline, often
+  carries the incentive in plain text e.g. "1 Month Free Rent" — a text-side
+  cross-check on the `promotions` codes), `marker` (opaque hash), `thumb2`,
+  `has_book_tour`, `request_tour_enabled`, `v`.
+  (UPDATE 2026-11-04, kept from the serene-einstein branch: completeness is judged by
+  sum(units) >= `total`, implemented in `coverage_report()` in `rentfaster_ingest.py`.)
 - **Map filter (property type checkboxes) can silently drift between draws
   within the same session** — observed 2026-08-10 across several captures in
   one sitting: some included Condo Unit (against the documented
@@ -169,12 +242,31 @@ documented; capture an example when first needed.
 
 | Step | Description | Status |
 |---|---|---|
-| 1 | Ingest: map.json → snapshots + listings_master | **DONE** — `rentfaster_ingest.py`, tested |
+| 1 | Ingest: map.json → snapshots + listings_master | **DONE** — `rentfaster_ingest.py`, 3 monthly snapshots ingested (Aug 11, Sep 10, Oct 2 2026) |
 | 2 | Geocode Inventory addresses (one-time, ~5,226) | NEXT — decide geocoder (reuse Colab sales geocoder vs fresh City of Edmonton Open Data geocoder) |
 | 3 | Matching engine: listing ↔ building, ~50m threshold, slug-address cross-check, manual review queue, permanent match table | pending |
 | 4 | Rent table: per-building per-suite-type asking rents w/ confidence flags + submarket/vintage aggregates for unlisted buildings | pending |
 | 5 | Signals: below-market flag (subject vs comp median), listing activity (duration, count, rent cuts), refi join from Sales | pending |
 | 6 | Proforma engine (format TBD with Neil; standard PGI→NOI→value expected) | pending |
+
+### Current status (2026-10-02)
+
+- Capture + ingest pipeline is stable and running monthly: `rf_console_capture.js`
+  -> `check_capture.py` -> `ingest_snapshot`. Three snapshots in the store
+  (2026-08-11, 2026-09-10, 2026-10-02): 1,295 / 1,256 / 1,257 properties,
+  1,791 distinct listing ids ever seen, 1,257 active.
+- Fourplex is excluded at ingest (purged from the store); filter convention is
+  Apartment + Townhouse only.
+- `listings_master` carries PROVISIONAL persistence columns (informational
+  only, no filtering or weighting until 6+ monthly snapshots exist; see
+  decision log 2026-10-02).
+- **The store is not in the repo.** `data/` is gitignored by design, so the
+  snapshots/master files live wherever the ingest ran. Neil keeps the
+  authoritative copy locally/Colab; any fresh environment (including cloud
+  sessions) starts empty and needs `snapshots.parquet` copied in before
+  ingesting a new month, or history and the month-over-month signals reset.
+- Not started: Step 2 geocoding, Step 3 matching (no Inventory workbook in the
+  repo or in cloud sessions yet), Steps 4-6.
 
 ### Step 1 details (rentfaster_ingest.py)
 
@@ -192,6 +284,33 @@ documented; capture an example when first needed.
   in ingest_log). Also warns on property-type filter drift (`search.type` !=
   Apartment+Townhouse). Suite-type coverage vs the site's Results counter is still
   reported when `site_suite_types` is passed.
+- `EXCLUDED_TYPES` (currently Fourplex) dropped from new payloads and purged
+  from existing snapshots on every ingest
+- `listings_master` persistence columns (provisional, derived each ingest):
+  `n_snapshots`, `snapshots_since_first_seen`, `current_streak`, `gap_flag`,
+  `n_rent_cuts`, `lingering_cut`, `persistence_weight`
+- [SUPERSEDED by the 2026-11-04 coverage rewrite above, which no longer prints the old floor metric] Known cosmetic issue: the printed `coverage=` figure is the old
+  max-single-view floor metric and can read above 100%; ignore it, use
+  `check_capture.py` and the site's Results counter instead
+
+### Capture QC (check_capture.py, added 2026-08-11)
+
+Run on every section file as it comes off the browser, before ingesting:
+`python src/check_capture.py data/raw/<snapshot_date>/*.json`
+
+Checks per file: listings vs the real 500 cap (flags at/near cap), array length
+vs `min(total, total2)`, active `search.type` filter vs the
+Apartment+Townhouse-only/no-condo/no-triplex/no-fourplex convention, duplicate
+ids, and city/type/bbox composition. Across a section set it also reports cross-section
+overlap so double-drawn areas are visible before ingest dedupes them silently.
+
+This exists because `ingest_snapshot`'s coverage number does not work for
+section-by-section captures: it takes `max()` of the per-file `total` values and
+compares that single number to the union of all files. With sections, each file
+has its own total for its own drawn area, so that ratio is meaningless (it reads
+as ~100%+ coverage no matter what was missed). Per-file truncation checking plus
+a whole-city cross-check is the workable substitute. Fix the aggregate before
+relying on it.
 
 ### Matching design (step 3, agreed)
 
@@ -255,6 +374,7 @@ matching (Step 3) and landlord-behavior signals (Step 5+).
 rf_data/
   snapshots.parquet(.csv)       append-only, one row per listing per snapshot
   listings_master.parquet(.csv) current state + first_seen/last_seen/active
+                                 + provisional persistence columns (Step 1 details)
   ingest_log.csv                per-run coverage QC
   city_totals.csv               metro-wide listing counts per city per snapshot
                                  (from payload's top-level 'cities' field, independent
@@ -301,7 +421,33 @@ rf_data/
 | 2026-08-04 | Rent-table structure planned for Step 4 (not yet built): long/tidy fact table, one row per (Building ID, snapshot_date, suite_type), suite_type either a real bed count or "blended"; incentive fields (has_promo/promo_codes/n_listings_with_promo) live in the same table at the same grain, not a separate one, so incentive-before-rent-change timing stays queryable without a join. Two derived views planned on top: current 12-month wide sheet, and an annual average sheet carrying n_months_observed/n_unique_listings/dominant_rent_confidence so aggregates never lose their support/confidence. Averaging must dedupe by unique listing_id first, not by snapshot row, or a listing that sits unrented for months gets overweighted |
 | 2026-08-10 | Corrected the documented listing cap: real per-response cap is 500, not the 800 implied by `search.max`. Confirmed across two independent captures (one via draw-tool custom area, total=2,251, returned exactly 500). Judge draw-tool/quadrant sizing against `total` vs 500, not 800 |
 | 2026-08-10 | Found `total`/`total2` can diverge (previously always identical); `total2` matches the real `listings` array length when they differ, `total` doesn't. Also observed map filter (property type checkboxes) drifting between draws within one session -- re-check filter before every draw, not just once per session. `ingest_snapshot`'s coverage calc still only reads `total`, not yet updated to prefer `total2` |
+| 2026-08-11 | Restarted the first monthly pull as section-by-section captures, snapshot_date 2026-08-11, staged in `data/raw/2026-08-11/`. Section 1 (NW Edmonton, 80 listings) is well under cap but was drawn with Apartment+Fourplex+Townhouse — Triplex missing again, so it needs a re-draw. Sections are drawn far smaller than they need to be: at 80/500 the NW draw could cover several times the area, so the city needs fewer, larger sections rather than many small ones |
+| 2026-08-11 | Section 2 (West Central, 369 listings, headroom 131) captured. Same Triplex filter gap as section 1 — the checkbox is persistently unset across sessions, so both sections need re-drawing once it is fixed. 17 listings overlap section 1 (dedupes on ingest, harmless) |
+| 2026-08-11 | Section 3 (West Central South, 312 listings, headroom 188) captured. Overlaps section 2 by 144 listings, all inside a ~1 km latitude band (53.5370..53.5456) covering the Strathcona/Garneau/downtown-south corridor — a reminder that section boundaries should be placed away from dense corridors, not through them. Overlap is safe (guarantees no gap, dedupes on ingest) but spends cap headroom twice. Running union after 3 sections: 600 unique listings. Triplex filter gap on all three |
+| 2026-08-11 | Dropped Triplex from the filter convention (Neil: not really multifamily; may loop back). Convention is now Apartment + Townhouse + Fourplex, no condo. `check_capture.py`'s EXPECTED_TYPES updated to match; sections 1-3 (NW, West Central, West Central South), all flagged for a Triplex gap under the old convention, are retroactively clean and need no re-draw |
+| 2026-08-11 | Added `src/check_capture.py`: per-section QC (cap headroom, `min(total,total2)` vs array length, filter-drift vs the documented type convention, dupes, cross-section overlap). Written because `ingest_snapshot`'s coverage metric is invalid for section captures — it compares `max()` of per-file `total` values against the union count, which cannot detect a missed section |
+| 2026-08-11 | Noted: draw-tool payloads carry no top-level `cities` field, so section-only months lose the `city_totals.csv` metro cross-check. Take one unfiltered whole-city capture per month to preserve it |
+| 2026-08-11 | Added `tools/rf_console_capture.js`: a browser console snippet that hooks fetch/XHR to auto-capture every map.json-shaped response while Neil pans the map manually, replacing the manual per-request "Save Response As" step. Does not automate the panning/fetching itself -- every request still originates from a manual map interaction in a real browser session, consistent with the no-automated-fetching rule. Exports one combined `{"captures": [...]}` file per session via `rfDownload()`. `check_capture.py` extended to QC either shape (single payload or combined file), reporting cross-capture overlap the same way it already does across separate files |
+| 2026-08-11 | Extended `rf_console_capture.js` to skip storing a response if it contains zero listing ids not already captured this session -- a slow pan/zoom fires a new map.json on nearly every small viewport shift, mostly redundant with what was just captured, so this avoids bloating the downloaded file and `check_capture.py`'s per-capture printout with near-duplicates. Tracked via a running seen-id set and skip counter, both surfaced in `rfStatus()` and reset by `rfClear()`. Verified in a Node harness with mocked fetch/XHR: a fully-redundant response is dropped and counted as skipped, a partially-overlapping one is kept and its new-id count is correct |
+| 2026-08-13 | Fixed a real bug in `rf_console_capture.js` found live during Neil's first capture session: the `fetch` hook called `res.clone()` on every fetch the page made (not just map.json), and a synchronous throw from `clone()` on some other response type propagated up through the `.then()` callback, rejecting the promise handed back to the page's own code -- surfaced as a flood of "Uncaught (in promise) undefined" console errors on every pan, unrelated to Rentfaster's own bot protection. Fixed by wrapping the clone/parse call in try/catch so nothing here can ever affect the pass-through response the page depends on. Verified with a Node harness simulating a `clone()` throw: the wrapped fetch now resolves normally instead of rejecting. Capture data itself was never affected -- listing counts and total/total2 stayed sane throughout, this only affected other unrelated requests on the page |
+| 2026-08-13 | Fixed a second issue found in the same session: the script's original "already installed" guard meant re-pasting an updated version (e.g. the bugfix above) into the same tab silently did nothing, leaving the old hooks running -- the only way to actually pick up a fix was a full page reload (losing pan position and captured-but-undownloaded data). Reworked to save the true native fetch/XHR once, then have every paste restore-then-rewrap from those originals while preserving existing captures/seen-ids/skip count. Re-pasting this script is now always safe: it swaps in fresh hooks and keeps everything already captured, no reload needed. Verified with a Node harness: re-invoking the script preserves prior capture state, does not double-record a subsequent response, and calls the native fetch exactly once per request (no wrapper stacking) |
+| 2026-08-13 | **[PARTLY SUPERSEDED 2026-08-14 -- only 4 of the 7 flagged captures were genuine truncations, and the residual gap is 0 listings, not 67.]** First real `rf_console_capture.js` session ingested: `data/raw/2026-08-11/console_session_1.json`, 60 sub-captures via one `rfDownload()`, 1,290 unique listings. Cities: Edmonton 6,905 rows, plus St. Albert, Sherwood Park, Spruce Grove, Leduc, Fort Saskatchewan, Beaumont, and Stony Plain (city_id 35, not previously seen -- added to `check_capture.py`'s CITY_NAMES and the map.json schema notes). 7 of 60 captures flagged: 4 hit the plain 500 hard cap (early wide zoomed-out views, e.g. 500 of a 1,756 total), 3 are the new sub-cap truncation pattern documented above. Checked whether the 53 clean captures alone cover what the 7 flagged ones saw: 67 of the 1,290 unique listings (~5%) appear ONLY in a flagged/truncated capture, unconfirmed by any clean one -- a real but small residual coverage gap in the areas those 7 captures covered, not a blocking problem given the project's ~80% accuracy target, but worth a supplemental zoomed-in pass over those 7 areas if Neil wants to close it this cycle |
+| 2026-08-13 | **[SUPERSEDED 2026-08-14 -- the 47.8% figure is a units mismatch; real coverage is 97.2%. The Results-counter-is-ground-truth lesson still holds, but it counts suite types.]** Corrected the true-total estimate used for coverage math. Initial estimate (1,750-1,840 for Edmonton) came from the `total`/`total2`/`cities` fields inside individual captured payloads, which are all scoped to whatever partial viewport was visible at that pan/zoom moment -- not a real unbounded citywide ceiling, and we'd already found those fields behave inconsistently in a few other ways this session. Neil checked Rentfaster's own "Results (N)" counter on the dedicated Edmonton Rentals location-search page (not map-viewport-bound) with the exact same filter (Apartment+Townhouse+Fourplex, no condo) confirmed active: **2,526**, well above the payload-derived estimate. Revised coverage: 1,207 unique Edmonton listings captured / 2,526 confirmed true total = **47.8%**, not the ~65-69% first reported. Metro-wide (adding Neil's ~200 estimate for outlying towns not covered by the Edmonton-scoped counter): 1,316 / ~2,726 = ~48%. Lesson: the site's own "Results (N)" badge on a location-search results page is the trustworthy ground truth for coverage math going forward, not any per-capture total/total2/cities field, which are all viewport-dependent |
+| 2026-08-13 | **[PARTLY SUPERSEDED 2026-08-14 -- the near-total overlap is real, but the '~52% gap' it tries to explain never existed.]** Second `rf_console_capture.js` session (`console_session_2.json`, 47 sub-captures, 1,016 unique listings) added almost nothing: 1,015 of 1,016 were already in session 1, net +1 listing to the whole pull (1,316 -> 1,317 metro-wide). Cause: the in-browser seen-id dedup only tracks one tab session, so a fresh paste/tab for session 2 had no memory of session 1's results and re-recorded the same central-Edmonton listings as if new. Session 2's own geographic spread (898 rows east of -113.490, 266 south of 53.478, 137 west of -113.611) shows session 1's "swept the whole map" pass already reached those zones, so the west/east/south/far-north "still open" list from before session 1 existed is now stale -- the remaining ~52% gap is not a simple unswept quadrant anymore. Working theory: at wide/medium zoom the map shows clustered pins (the "44", "36" etc. count badges), and map.json may only return a partial sample behind a cluster until zoomed in close enough for it to break apart -- meaning a citywide pan at one zoom level can visually cover every neighborhood while still under-fetching what's bundled in denser clusters. Untested; suggested next step is a targeted zoom-in on a few dense cluster areas to see if that adds meaningfully more unique ids |
+| 2026-08-13 | **[SUPERSEDED 2026-08-14 -- the gap being theorized about was a measurement artifact.]** Tested the cluster theory above (`console_session_3.json`, zoom level 15, 5 sub-captures, 65 unique listings): result was 0 new listings, all 65 already captured, and every sub-capture at this zoom showed an exact match between array length and total2 (e.g. 40=40, 19=19) -- no truncation at this zoom either. Theory not supported by this test: this specific area (roughly Bonnie Doon/Idylwylde, east-central Edmonton) had already been completely captured by an earlier pass, cluster markers or not. Revised conclusion: the remaining ~52% coverage gap is more likely genuine unswept geography -- neighborhoods no capture has touched at all -- rather than a zoom-level artifact hiding listings in places already panned over. Re-zooming into already-covered areas is unlikely to help further; finding literally-unvisited areas (or a supplementary non-geographic pass, e.g. price bands, purely as a cross-check) is the more promising next step |
+| 2026-08-13 | Built `coverage_map.html` (published artifact, not in repo): a 1.3km density grid over all listings captured so far, with cells flagged as candidate gaps when empty but surrounded by nonzero neighbors (vs. plain edge-of-extent emptiness). Top flagged gaps: Ermineskin (23.7 km2, ~10.5km S of downtown), Jasper Park (11.8 km2, SW), Callingwood (10.1 km2, SW), Windermere (8.5 km2, SW), Tamarack (6.8 km2, SE), Overlanders (6.8 km2, ENE), Belmead (3.4 km2, WSW), Sherbrooke (3.4 km2, NW) |
+| 2026-08-14 | **[SUPERSEDED later on 2026-08-14 -- the 48.4% figure is a units mismatch; the +5-new result actually indicates near-complete coverage, not a plateau.]** Fourth `rf_console_capture.js` session (`console_session_4.json`, 58 sub-captures, 693 unique listings): Neil deliberately targeted the flagged gap regions above plus other high-density areas. Result: only +5 genuinely new listings. Cross-checked the file's bbox against the gap list -- it covered 6 of 8 flagged regions (Ermineskin, Jasper Park, Callingwood, Windermere, Sherbrooke, Belmead) and came back with almost nothing new, while missing Tamarack and Overlanders (both east of the swept bbox). Conclusion: the flagged "surrounded by data but empty" cells are most likely genuine non-residential land (river valley, university, industrial, single-detached zones) rather than a capture failure -- consistent with Neil's own read of the areas. Combined Edmonton total now 1,213 / 2,505 confirmed true total (live count drifted down slightly from 2,526) = 48.4%, essentially flat. Coverage looks like it's genuinely plateauing in the high-40s% for this method; Tamarack and Overlanders remain the only two flagged regions not yet re-checked |
+| 2026-08-14 | **Found and fixed a real bug in `rentfaster_ingest.py`, never previously run this month**: `load_payload()` only understood a single raw map.json payload per file, so all 4 `console_session_*.json` files (the combined `{"captures": [...]}` shape from `rf_console_capture.js`) silently returned 0 listings -- no error. Had `ingest_snapshot` been run before this was caught, it would have kept only the 3 hand-drawn sections and dropped the majority of the month's data with no warning. Fixed to pool listings across all sub-captures in a combined file, taking the largest sub-capture `total` and the last non-empty `cities` list (consistent with the existing per-file merge semantics in `ingest_snapshot`'s outer loop). Verified against real data, then ran the pipeline for the first time this month across all 7 raw files: `raw_rows=12992 unique=1322 site_total=1840 coverage=0.718`. The printed `coverage=0.718` is the OLD invalid max-per-file-total metric (already documented as broken for section/pan captures) and should be ignored -- the real figure is ~48% from the site's own Results counter. `listings_master.csv`/`snapshots.csv`/`city_totals.csv`/`ingest_log.csv` now exist in `data/rf_data/` for real for the first time this month (gitignored, not committed). Spot-checked the output: 0 duplicate listing_ids, 7 null-price rows (all legitimate junk-price parses, e.g. empty raw price field), 129 rows with no community (matches the documented empty-intro quirk), and every lat/long extreme checked out as a real outlying town (Stony Plain, Leduc, Fort Saskatchewan) -- no bad geocodes found. Type breakdown of the full dataset: Apartment 851 (64.4%), Townhouse 444 (33.6%), Fourplex 27 (2.0%) -- Townhouse is a third of all captured data, so narrowing to Apartment-only (considered, not adopted) would be a real data loss, not just cleanup; whether Townhouse/Fourplex listings actually match anything in the 5+ unit Inventory is still an open question, unverifiable without the workbook. `rent_confidence` breakdown: direct 702 (53%), certain 76 (6%), inferred 248 (19%), blended 296 (22%) -- the blended fifth is a real completeness gap independent of geographic coverage, needs detail-page JSON to resolve (open question #5), and is probably the next-most-valuable improvement after this month's pull wraps up |
+| 2026-08-14 | **Root cause of the "missing half the data" problem found: there was no missing half.** `total` in map.json counts SUITE TYPES, not property listings -- `sum(units)` equals `total` exactly in 169/173 captures (the 4 exceptions are the genuine 500-property-cap truncations), independently confirmed on a location-search capture (457 property rows, sum(units)=628=total). The site's "Results (N)" badge uses the same suite-type grain. Every coverage figure in this log before today compared property rows (map pins) against a suite-type counter, a units mismatch. Corrected coverage for the 2026-08-11 pull: 1,213 Edmonton property listings covering **2,436 suite types against the site's 2,505 = 97.2%**, not the 47.8%/48.4% previously recorded. The remaining ~2.8% is consistent with listing churn between capture time and reading the counter. Consequences: (a) the bbox-vs-polygon theory for total/total2 is withdrawn -- West Central's `sum(units)`=746 exactly matches its `total`=746, the empty 3.8 km strip was real but not the cause; (b) the "sub-cap truncation pattern" of 2026-08-13 never existed -- those captures (426 of 921, 406 of 904, 374 of 836) were complete, 426 property rows covering exactly 921 suite types; (c) the residual coverage gap from truncated captures is 0 listings, not the 67 previously estimated, since only 4 captures were genuinely truncated and every listing in them appears in a clean capture too; (d) the ~52% "unswept geography" conclusion and the cluster-thinning theory are both moot; (e) `check_capture.py` fixed to compare `sum(units)` against `total` and to apply the 500 cap to property rows -- flagged captures drop from 7 to 4, all genuine |
+| 2026-08-14 | **map.json price/beds fields are FILTER-DEPENDENT -- they describe only the suites matching the active query, not the whole property.** Found comparing the same listing across two captures: id 757246 returns `price2` 1292 / `beds2` 2 under a 1050-1350 price band, but `price2` 1477 / `beds2` 3 with no price filter; id 578904 returns `price2` null / `beds2` null banded vs 1899 / 3 unbanded. Two consequences. First, this retroactively justifies rejecting price-band capture (2026-08-11 entry): it would have silently recorded truncated rent ranges for every multi-suite property, corrupting exactly the buildings the rent table most needs. Second and still open: the same mechanism may apply to the property-type filter -- a building advertising both an excluded type (Condo Unit) and an included one could be reporting a range clipped to only the included suites. Not yet tested; worth one capture with all types enabled compared against the standard filter on the same area before Step 4 relies on these ranges |
+| 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
+| 2026-09-10 | Dropped Fourplex from the filter convention (Neil: no longer needed). Convention is now Apartment + Townhouse only, no condo, no triplex, no fourplex. `check_capture.py`'s `EXPECTED_TYPES`/`BANNED_TYPES` updated to match. Ingested the 2026-09-10 monthly pull (`console_session_1.json`, 75 sub-captures via `rf_console_capture.js`, snapshot_date 2026-09-10): 6,356 raw rows, 1,256 unique properties, 2,619 suite types vs largest single-view total of 2,570 (101.9% floor-coverage). All 75 captures were filtered Apartment+Townhouse only (retroactively clean against the new convention, no re-draw needed) since Fourplex was already dropped before this session's captures. 2 of 75 captures (the initial wide zoomed-out sweep) hit the 500-property cap and were individually truncated by ~1,270 suite types each, but verified harmless: only 2 listing ids in the entire file appear exclusively in those 2 capped captures and nowhere else -- Neil's subsequent zoomed-in passes already covered what the wide sweep missed, confirmed by the >100% overall coverage figure |
+| 2026-10-02 | Ingested the October monthly pull (`console_session_1.json`, 36 sub-captures via `rf_console_capture.js`, snapshot_date 2026-10-02): 4,810 raw rows, 1,257 unique properties, 2,618 suite types vs largest single-view total of 1,206. All 36 captures Apartment+Townhouse only, clean against the filter convention. Cities: Edmonton 4,493 rows, plus St. Albert, Sherwood Park, Spruce Grove, Leduc, Beaumont, Fort Saskatchewan, Stony Plain. 2 of 36 flagged by `check_capture.py`: #28 at the 500 cap (1,084 of 1,206 suite types returned, truncated) and #24 near cap (471 properties). Verified harmless: neither has a single listing id exclusive to it, so no re-capture needed. Supply is flat vs September (1,256 properties, 2,619 suite types). Note the printed `coverage=2.171` is still the old max-single-view floor metric, not a real coverage figure. Data persistence caveat: raw captures and `data/rf_data/` outputs are gitignored by design, so this entry is the only repo record of the month; the actual data lives only in whatever environment ran the ingest. This session ran in a throwaway cloud container with no prior snapshots, so its `snapshots.parquet` holds October only. Month-over-month signals (`rent_changes`, `promo_changes`) need the earlier snapshots from Neil's local/Colab store to be present when ingesting |
+| 2026-10-02 | Combined Aug 11 + Sep 10 + Oct 2 into one store (1,791 listings ever seen). Persistence read: 808 listings present in all 3 snapshots (44% of all ids seen); 83% of October's live listings were seen in an earlier snapshot; Aug to Sep retention 74%, Sep to Oct 79%. Churn concentrates in Townhouse (24% present in all 3 vs 60% for Apartment), single-suite-type ads (27% vs 68-77% for 2+ suite types) and small posters (<10 live listings: 36% vs 56%). Only 14% of partially-present ids share an address with a different id, so id reissue looks rare; 44 ids vanished in September and returned in October with the same id (partial answer to open question #7) |
+| 2026-10-02 | Fourplex EXCLUDED at ingest (`EXCLUDED_TYPES` in `rentfaster_ingest.py`): dropped from every new payload and purged from any existing `snapshots.parquet` on each ingest, so legacy August rows (27 listings) no longer read as monthly exits. Re-ingesting from raw reproduces this. Supersedes counting Fourplex in the Aug 11 snapshot |
+| 2026-10-02 | Added PROVISIONAL persistence columns to `listings_master` (derived, rebuilt every ingest from snapshots, snapshots store unchanged): `snapshots_since_first_seen`, `current_streak` (consecutive snapshots ending at the latest, 0 if inactive), `gap_flag` (absent from a snapshot between first and last sighting), `n_rent_cuts` (price_lo drops of >=1% between consecutive OBSERVED prices, gaps bridged), `lingering_cut` (most recent observed price is a >=1% drop vs prior observed price), `persistence_weight` = min(n_snapshots, 3) x confidence factor (direct 1.0, certain 1.0, inferred 0.7, blended 0.4). INFORMATIONAL ONLY: nothing filters or weights on them. Do not apply weights or automatic filtering until 6+ monthly snapshots exist. Known limits: left-censoring (first_seen only means tracking started; new listings look weak simply for being new), absence can be a capture miss (~97% coverage) not a real exit, snapshot gaps are uneven (30 and 22 days), and a high weight rewards a listing that lingers unrented, so lingering_cut stays a separate softness signal and is never folded into the weight. Check on first Oct build: gap_flag=44 matches the independent same-id-returned count, current_streak>0 equals active for every row, 278 listings flagged lingering_cut, 45 cut twice |
+| 2026-10-02 | Pre-matching data review (3 snapshots, 1,257 active listings). Quality is good: lat/long 100%, civic-numbered slug 94%, price_lo 99.6%, community 89%; coordinates are stable per listing (16 of 1,209 multi-snapshot listings ever change, only 7 move >50m), so the ~50m threshold is sound. rent_confidence of active listings: direct 52%, inferred 20%, blended 22%, certain 6%. Direction suffix (NW/NE/SW/SE) present on only 56% of slugs, confirming the normalize-direction rule. Matching ceiling: ~1,164 distinct active addresses vs a 5,252-building Inventory means at most ~22% of Inventory can have a live Rentfaster rent in any month, so the submarket/vintage comp fallback is the main path for most buildings, not an edge case. Townhouse is 36% of active listings but behaves unlike the target asset (38% posted by single-listing posters, 82% one suite type, median $1,879 vs $1,298 Apartment): many are likely individual townhouse units, not 5+ unit buildings, and may match little or nothing in Inventory. 86 listings carry 12-decimal coordinates versus 7 for the rest, source of the difference unknown. 32 addresses have more than one active listing, so Step 3/4 must aggregate listings to a building before computing a building rent |
 | 2026-11-04 | Property-type filter is now Apartment + Townhouse only. Triplex and Fourplex dropped from the capture convention (supersedes the 2026-07-30 filter and the 2026-08-10 "confirm Triplex/Fourplex" note) |
 | 2026-11-04 | Nov capture QA (47 + 20 draws, 1,307 unique listings, all Apartment/Townhouse). Three downtown draws reported `total2` 988/1,168/1,183 against 439/500/500 returned. 20 smaller redraws over the same core were all complete (n == `total2`) and added 0 new listings; every listing from the three oversized draws sits inside a complete draw, so no gap. CORRECTION (same day, after reviewing the Colab ingest): `total` counts SUITE TYPES, not properties. Sum of each listing's `units` equals `total` exactly on every complete draw (capture 28: 439 properties, 988 suite types, total 988 = complete; captures 29/30 summed to 1,107/1,104 vs 1,168/1,183 = truncated at the 500-row cap). `total2` is the property-row count on small draws but mirrors the suite-type count on bigger ones, so it is not a reliable completeness test alone. Rule: a draw is complete when sum(units, default 1) >= `total`; an incomplete draw is fine if its `search.area` box is fully inside the union of complete draws (true here, 0% uncovered) |
 | 2026-11-04 | Ingested Nov snapshot (2 capture files, 67 draws, 9,525 raw rows -> 1,307 unique listings, 0% uncovered area). Rewrote coverage calc in `rentfaster_ingest.py` per the rule above; ingest dedupes on listing_id itself (keep first), no pre-dedupe needed; ingest_log now idempotent per snapshot_date |
@@ -351,19 +497,30 @@ RF-Scraping-Project/
   CLAUDE.md                  <- this file
   README.md
   src/
-    rentfaster_ingest.py     <- exists (step 1)
+    rentfaster_ingest.py     <- exists (step 1, done)
     rentfaster_detail_ingest.py <- exists: listing-detail (rf_detail_*.json) -> detail_listings/suites/promos
     snapshot_compare.py      <- exists: month-over-month compare() + trend_chart(); reads ingest output only
-    geocode_inventory.py     <- step 2
-    match_engine.py          <- step 3
-    rent_table.py            <- step 4
-    signals.py               <- step 5
+    check_capture.py         <- exists: capture QC, run per capture file before ingest
+    geocode_inventory.py     <- step 2 (not yet created)
+    match_engine.py          <- step 3 (not yet created here; see companion repo)
+    rent_table.py            <- step 4 (not yet created)
+    signals.py               <- step 5 (not yet created; rent_changes/promo_changes
+                                 currently live in rentfaster_ingest.py)
+  tools/
+    rf_console_capture.js    <- browser console helper: auto-saves map.json
+                                 responses while Neil pans manually (2026-08-11)
   data/
-    raw/                     <- monthly map.json captures (gitignored)
-    rf_data/                 <- pipeline outputs (gitignored, logs kept via .gitkeep)
+    raw/<snapshot_date>/     <- monthly map.json captures, one folder per snapshot
+                                 (gitignored; the original downloads are the source
+                                 of truth, everything in rf_data can be rebuilt)
+    rf_data/                 <- pipeline outputs (gitignored, logs kept via .gitkeep).
+                                 AUTHORITATIVE COPY LIVES ON NEIL'S MACHINE/COLAB, not here
     inventory/               <- inventory xlsx (gitignored, sensitive)
   notebooks/
-    rentfaster_ingest.ipynb  <- Colab notebook wrapping step 1
+    rentfaster_ingest.ipynb  <- Colab notebook wrapping step 1 (imports
+                                 src/rentfaster_ingest.py, so it picks up EXCLUDED_TYPES
+                                 and the persistence columns once the updated module
+                                 is uploaded to Colab)
   .gitignore                 <- data files, credentials
 ```
 
