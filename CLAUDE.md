@@ -1,6 +1,14 @@
 # Rentfaster Market Intelligence + Proforma Engine
 
-Project reference file. Written 2026-07-30. This document is the persistent context
+Project reference file. Written 2026-07-30. Updated 2026-08-18.
+
+**New session? Read `property-merge-pipeline/docs/HANDOFF.md` first.**
+
+**Cross-repo:** listing-to-building matching, the durable-key design and the
+Edmonton assessment work now live in the companion repo
+`property-merge-pipeline` — see its `CLAUDE.md` and
+`docs/PLANNING_2026-08-18.md`. Read those before starting anything in Step 3
+below; that planning record supersedes Step 3's original design. This document is the persistent context
 for all future sessions (Claude Code or claude.ai). Read it fully before making
 changes. Update the Decision Log and Status sections as work progresses.
 
@@ -37,7 +45,7 @@ buildings into capex-required vs rent-lift pools. Rentfaster rents feed this.
 
 ## 3. Inventory workbook (input)
 
-File pattern: `inventory_merge_*.xlsx`. Sheets: Inventory (5,252 rows x 78 cols),
+File pattern: `inventory_merge_*.xlsx`. Sheets: Inventory (4,746 rows x 78 cols; the 5,252 figure recorded earlier was stale),
 Crosswalk, Sales (1,284 rows x 62 cols, includes geocoded lat/long + mortgage/refi
 columns), CMB Reference, plus Review sheets.
 
@@ -64,6 +72,225 @@ files he saves. Keep it this way — do not add automated fetching: every
 capture must still originate from Neil manually panning/zooming/drawing on the
 map in a real browser session. Nothing may issue its own requests to
 Rentfaster or drive the map without him.
+
+### Listing-detail schema (DOCUMENTED 2026-08-18 — closes open question 5)
+
+Rentfaster detail pages are **server-rendered with schema.org JSON-LD**, not a
+JSON API. The payload never crosses fetch/XHR — it arrives inside the HTML:
+
+    <script type="application/ld+json">
+      {"@type":"ItemPage","mainEntity":{"@type":["LocalBusiness","ApartmentComplex"], ...}}
+
+`mainEntity` carries:
+
+| Field | Notes |
+|---|---|
+| `name` | building name, or the street address when the building is unnamed |
+| `slogan` | often the building name, sometimes a promo line |
+| `parentOrganization` | the property **MANAGER**, not necessarily the owner. Boardwalk and Mainstreet manage what they own; Zen Residential manages a building owned by an individual. Has `telephone`, `url` |
+| `address` | `streetAddress`, `addressLocality`, `addressRegion`, **`postalCode`** |
+| `geo` | latitude, longitude |
+| `amenityFeature[]` | 13–18 structured amenities per listing |
+| **`containsPlace[]`** | **one entry per advertised suite type** |
+| | `numberOfBedrooms`, `numberOfFullBathrooms`, `numberOfPartialBathrooms` |
+| | `potentialAction.price` — **rent for that suite type** |
+| | `floorSize.value` — **SQUARE FEET** |
+| | `additionalProperty` — Availability Date, Utilities Included |
+| `priceRange`, `telephone`, `image`, `petsAllowed`, `description` | |
+
+What this closes:
+
+- **`blended` and `inferred` rent confidence.** map.json gives a range with no
+  way to map price to bed count. `containsPlace` states it outright.
+- **Square footage**, the largest gap in the proforma inputs (FileMaker suite
+  sizes 8–19%, CoStar `Average Unit SF` 28% and dropped). Present on 4 of 5
+  suites in the first sample, tied to a bed count and a rent.
+- **Utilities Included**, which decides whether a quoted rent is net or gross.
+- **Property manager**, corroborating Inventory's Owner Company on 3 of 4.
+
+Caveats, from the first 4 captures:
+
+- `containsPlace` is what is **currently advertised**, not the building's suite
+  mix. One listing showed a single 1-bed while its own description mentioned
+  bachelor, 1 and 2 bedroom options. It is a rent observation, not a rent roll.
+- Rents move between captures. Two of four disagreed with the 2026-08-11 map
+  capture taken 7 days earlier ($1,339 → $1,309; $1,099–1,250 → $999). Detail
+  captures need their own capture date rather than being folded into the map
+  snapshot.
+**Field population, measured 2026-08-19 on 21 listings / 103 suite types:**
+
+| Level | Field | Populated |
+|---|---|---|
+| listing | name, slogan, address, postalCode, geo, priceRange, telephone, petsAllowed, description, image, amenityFeature, containsPlace | **100%** |
+| listing | parentOrganization | 90% |
+| suite | bedrooms, bathrooms, rent | **100%** |
+| suite | **floorSize (square feet)** | **98%** |
+| suite | Utilities Included | 75% |
+| suite | Availability Date | 100% (8/8 on the survey capture) |
+
+Amenities run 3–30 per listing (median 18). Suites per listing run 1–17.
+
+**Availability is a directional vacancy read, and the two values say
+opposite things.** `Availability Date` arrives per suite type as display text:
+"Immediate", "Sep 01, 2026", or in map.json the yearless "Sep 01".
+`parse_rf_detail.py` keeps the raw string and adds `available_date` (ISO) and
+`available_immediate`, then rolls them up per listing into `vacancy_signal`:
+
+| Value | Means | Does NOT mean |
+|---|---|---|
+| `current` | at least one advertised suite type is available now | any particular amount of vacancy |
+| `none_current` | every advertised suite type is future-dated | the building is full |
+| `unknown` | nothing parseable | anything |
+
+The asymmetry is the point. "Immediate" proves vacancy exists but the count is
+suite TYPES, not units -- one row can be a single empty suite or twelve, so
+read `suite_types_immediate` as a floor of one. A listing whose suites are all
+future-dated is the more informative case: nothing is available today, which
+is a real no-vacancy observation for the suite types being advertised.
+
+Three limits that must travel with it. `containsPlace` is what is currently
+advertised, so `none_current` is silent about suite types the building chose
+not to list. A building with no listing at all is absent from the file
+entirely and must never be read as full. And in map.json availability sits at
+LISTING grain, not suite grain, so the all-future-dated inference needs a
+detail capture -- the monthly map pull cannot produce it.
+
+The rule lives in `src/availability.py`, duplicated byte-for-byte as
+`tools/availability.py` in the companion repo. Neither repo can import from
+the other, and a disagreement would mean the same building reading differently
+depending on which file you opened. Both carry the same case table and a
+self-check (`python3 src/availability.py`). Change one, change both.
+
+Yearless map.json dates resolve against the capture date, but a month-day up
+to 60 days past stays in the current year rather than rolling forward. A
+listing captured Aug 13 advertising "Aug 01" is a suite empty for two weeks
+that has not rented -- the strongest softness signal there is -- and the naive
+rule would push it to 2027 and read it as no vacancy.
+
+Unrecognised availability text is reported by the parser rather than left
+blank, so a new phrasing surfaces instead of reading as missing data.
+
+**Half the amenity vocabulary is noise.** Pooled over 30 listings, 12 entries
+are *area* features rather than building features and are near-universal —
+Bus, Playground/Park and Shopping Center are all 30/30, Bike Paths 28/30. They
+carry no discriminating signal. Fridge and Oven/Stove at 26/30 are the same
+story. **25 of 50 distinct amenities actually vary** and are worth keeping:
+Dishwasher 20/30, Elevator 17, Balcony 16, Fitness Area 11, Air Conditioning 9,
+Laundry In-Suite 9 versus Shared 10, and the flooring set — Carpeted 7,
+Laminate 6, Hardwood 4, Luxury Vinyl Plank 3, Tile 3.
+
+**Facts versus claims.** The prose cannot be trusted as evidence. "Fully
+renovated boutique suites" states neither when nor to what degree, and the
+worst stock still advertises itself as highly amenitized. Only checkable facts
+carry weight: rent, square feet, beds, baths, utilities included, and the
+binary amenity entries — flooring type especially, since it is the closest
+thing to an observable proxy for suite condition. Treat `description` and
+`slogan` as leads to verify, never as attributes.
+
+**Incentives can be baked into the listing photo.** Confirmed 2026-08-25:
+Beau Mills advertised "0.5 months free rent" in the listing *image*, with
+nothing in the promo box (`promotions: null`) and nothing in the description.
+No text or DOM extraction can reach that. The image URLs are captured, so OCR
+remains possible later, but for now an image-only incentive is invisible to
+the pipeline and only a human sees it. Record those in the survey catalogue
+with `incentive_source = listing image`.
+
+Two consequences:
+
+- **Square footage is solved for any building with a listing.** 98% here
+  against FileMaker's 8–19% and CoStar's dropped 28%, and it is per suite type
+  tied to a bed count and a rent, so **rent per square foot is computable for
+  the first time**. On that sample: bachelor $2.74, 1-bed $2.64, 2-bed $2.19,
+  3-bed $1.96 — the expected gradient, which is itself a sanity check.
+- **The rent-confidence tiers collapse.** Of the 21, map.json had rated 12
+  `blended` and 5 `inferred`. Every one now has explicit per-suite rent, so
+  all become equivalent to `direct`.
+
+All 21 address-matched an Inventory building. Manager matched Owner Company on
+11 of 15 comparable.
+
+**Incentives in free text — the structured flag is incomplete.** `promotions`
+in map.json is a tag list: it says *that* an incentive exists, never its terms,
+and it misses incentives typed into the ad copy rather than the promotions box.
+On the 21-listing sample, **2 advertise an incentive in the text that map.json
+does not flag** ("Get up to 2 months free", "1 MONTH FREE RENT PLUS FREE
+INTERNET & CABLE"), while 7 carry the flag with no matching text. The two
+signals are **complementary, not redundant** — use both, trust neither alone.
+
+Terms matter for underwriting: two months free is roughly a 16% effective
+discount, $500 off is nearer 3%. `parse_rf_detail.py` writes the **full
+description verbatim** plus heuristic `incentive_detected` / `incentive_kinds`
+/ `incentive_snippet` columns, so the rules can be improved and re-run later
+without recapturing anything.
+
+**Parking lives in the text too, and rates exist nowhere else.** The structured
+payload is nearly silent on parking — 1 of 21 listings carried a parking
+amenity tag ("Guest Parking") while **14 of 21 described parking in the ad
+copy**. Rates appear only there: 3 of 21 quoted one, spanning **$10/mth for an
+outdoor stall to $195/mth underground**.
+
+Inventory already holds `Parking Type` (43%) and `Parking Spaces` (49%), so
+type extracted from the text is a **cross-check**, not a replacement —
+Inventory's is more reliable where present. But Inventory has **no rate field
+at any fill rate**, which makes the listing text the only source for it. On a
+100-stall building that $10-to-$195 spread is roughly $220k of annual revenue,
+so it is materially load-bearing for a proforma rather than a nice-to-have.
+
+`parse_rf_detail.py` writes `parking_types`, `parking_rate_monthly` and
+`parking_rate_text`. Two extraction traps found and fixed on this sample, both
+worth knowing if the rules are ever revised: matching on the bare word "park"
+reads "nearby parks and trails" as surface parking, and taking the smallest
+dollar amount in a segment reported a $35 pet fee as the parking rate for a
+building charging $195. Amounts are now chosen by proximity to a parking word,
+and the raw snippet is always kept so a human can check.
+
+### Listing-detail capture (two versions, added 2026-08-18)
+
+**`tools/rf_detail_capture.user.js`** — Tampermonkey/Violentmonkey userscript,
+the one to use for volume. Runs itself on every listing page opened, so
+clicking links out of the match review workbook just works. Dedupes on
+listing id, shows a badge with the running count, click to download. Needed
+because opening a listing is a navigation and page memory dies each time, so
+the console version would have to be re-pasted on all ~800 review rows.
+
+**`tools/rf_detail_capture.js`** — console version, discovery mode. Still
+useful for a one-off, and for re-running discovery if the page structure
+changes. It is what documented the schema above: it scans inline JSON as well
+as fetch/XHR, which is why it found the payload at all.
+
+Neither fetches anything. Every page is one Neil opened himself; both only read
+a document the browser already parsed.
+
+#### Console version, discovery notes
+
+Companion to the map hook, for browsing individual listing pages. Same rule:
+it never fetches anything itself, it only keeps what the browser already
+loaded while Neil clicks through listings manually.
+
+Runs in **discovery mode** because the detail schema is still undocumented
+(open question 5). Rather than matching a known shape it keeps anything
+plausibly listing-related and reports the structure back via `rfdInspect(n)`,
+which prints keys and types rather than values. Once a real capture exists the
+schema goes in Section 4 and the filter can be narrowed.
+
+Two things it does that the map hook does not, both necessary here:
+
+- **Scans inline JSON in the loaded document**, not just fetch/XHR. If the
+  detail page is server-rendered the payload never crosses the network hooks —
+  it arrives inside the HTML. Reads the DOM the browser already parsed; issues
+  no request.
+- **Persists captures to localStorage**, because clicking between listings is a
+  navigation and a full page load wipes in-memory state. The map hook lives on
+  one page and never had this problem.
+
+`rfdStatus()` / `rfdInspect(n)` / `rfdDownload()` / `rfdClear()`. Verified in a
+Node harness: inline and network payloads both captured, re-pasting swaps hooks
+without double-wrapping (native fetch called once per request), captures
+survive across page loads, listing id parsed from the URL slug.
+
+The best time to run it is during match review — the listings being verified
+are the ones worth having detail for, so the data comes as a byproduct of work
+already being done.
 
 ### Console capture helper (tools/rf_console_capture.js, added 2026-08-11)
 
@@ -439,6 +666,15 @@ rf_data/
 | 2026-08-14 | **[SUPERSEDED later on 2026-08-14 -- the 48.4% figure is a units mismatch; the +5-new result actually indicates near-complete coverage, not a plateau.]** Fourth `rf_console_capture.js` session (`console_session_4.json`, 58 sub-captures, 693 unique listings): Neil deliberately targeted the flagged gap regions above plus other high-density areas. Result: only +5 genuinely new listings. Cross-checked the file's bbox against the gap list -- it covered 6 of 8 flagged regions (Ermineskin, Jasper Park, Callingwood, Windermere, Sherbrooke, Belmead) and came back with almost nothing new, while missing Tamarack and Overlanders (both east of the swept bbox). Conclusion: the flagged "surrounded by data but empty" cells are most likely genuine non-residential land (river valley, university, industrial, single-detached zones) rather than a capture failure -- consistent with Neil's own read of the areas. Combined Edmonton total now 1,213 / 2,505 confirmed true total (live count drifted down slightly from 2,526) = 48.4%, essentially flat. Coverage looks like it's genuinely plateauing in the high-40s% for this method; Tamarack and Overlanders remain the only two flagged regions not yet re-checked |
 | 2026-08-14 | **Found and fixed a real bug in `rentfaster_ingest.py`, never previously run this month**: `load_payload()` only understood a single raw map.json payload per file, so all 4 `console_session_*.json` files (the combined `{"captures": [...]}` shape from `rf_console_capture.js`) silently returned 0 listings -- no error. Had `ingest_snapshot` been run before this was caught, it would have kept only the 3 hand-drawn sections and dropped the majority of the month's data with no warning. Fixed to pool listings across all sub-captures in a combined file, taking the largest sub-capture `total` and the last non-empty `cities` list (consistent with the existing per-file merge semantics in `ingest_snapshot`'s outer loop). Verified against real data, then ran the pipeline for the first time this month across all 7 raw files: `raw_rows=12992 unique=1322 site_total=1840 coverage=0.718`. The printed `coverage=0.718` is the OLD invalid max-per-file-total metric (already documented as broken for section/pan captures) and should be ignored -- the real figure is ~48% from the site's own Results counter. `listings_master.csv`/`snapshots.csv`/`city_totals.csv`/`ingest_log.csv` now exist in `data/rf_data/` for real for the first time this month (gitignored, not committed). Spot-checked the output: 0 duplicate listing_ids, 7 null-price rows (all legitimate junk-price parses, e.g. empty raw price field), 129 rows with no community (matches the documented empty-intro quirk), and every lat/long extreme checked out as a real outlying town (Stony Plain, Leduc, Fort Saskatchewan) -- no bad geocodes found. Type breakdown of the full dataset: Apartment 851 (64.4%), Townhouse 444 (33.6%), Fourplex 27 (2.0%) -- Townhouse is a third of all captured data, so narrowing to Apartment-only (considered, not adopted) would be a real data loss, not just cleanup; whether Townhouse/Fourplex listings actually match anything in the 5+ unit Inventory is still an open question, unverifiable without the workbook. `rent_confidence` breakdown: direct 702 (53%), certain 76 (6%), inferred 248 (19%), blended 296 (22%) -- the blended fifth is a real completeness gap independent of geographic coverage, needs detail-page JSON to resolve (open question #5), and is probably the next-most-valuable improvement after this month's pull wraps up |
 | 2026-08-14 | **Root cause of the "missing half the data" problem found: there was no missing half.** `total` in map.json counts SUITE TYPES, not property listings -- `sum(units)` equals `total` exactly in 169/173 captures (the 4 exceptions are the genuine 500-property-cap truncations), independently confirmed on a location-search capture (457 property rows, sum(units)=628=total). The site's "Results (N)" badge uses the same suite-type grain. Every coverage figure in this log before today compared property rows (map pins) against a suite-type counter, a units mismatch. Corrected coverage for the 2026-08-11 pull: 1,213 Edmonton property listings covering **2,436 suite types against the site's 2,505 = 97.2%**, not the 47.8%/48.4% previously recorded. The remaining ~2.8% is consistent with listing churn between capture time and reading the counter. Consequences: (a) the bbox-vs-polygon theory for total/total2 is withdrawn -- West Central's `sum(units)`=746 exactly matches its `total`=746, the empty 3.8 km strip was real but not the cause; (b) the "sub-cap truncation pattern" of 2026-08-13 never existed -- those captures (426 of 921, 406 of 904, 374 of 836) were complete, 426 property rows covering exactly 921 suite types; (c) the residual coverage gap from truncated captures is 0 listings, not the 67 previously estimated, since only 4 captures were genuinely truncated and every listing in them appears in a clean capture too; (d) the ~52% "unswept geography" conclusion and the cluster-thinning theory are both moot; (e) `check_capture.py` fixed to compare `sum(units)` against `total` and to apply the 500 cap to property rows -- flagged captures drop from 7 to 4, all genuine |
+| 2026-08-18 | **Step 3 redesigned in the companion repo** (`property-merge-pipeline/docs/PLANNING_2026-08-18.md`). The original design here — nearest building within ~50m as primary, address as cross-check — is withdrawn. Measured on 9,323 real Edmonton multifamily parcels: median nearest neighbour is **10.0m** and **79.7% have another parcel inside 50m**, while RentFaster pin error is median **9.3m**. Measurement noise equals candidate separation, so position can confirm a match but can never decide one. Rule is now **address proposes, proximity confirms**, and proximity is not available yet anyway because Inventory carries no coordinates from any source |
+| 2026-08-18 | Matching validated against Inventory for the first time: **785 of 1,322 listings match a building on civic address**. Broken out by type — Apartment 71.4%, Townhouse 23.9%, Fourplex 7.7%. The long-standing "55% match rate" is therefore mostly **composition, not failure**, and it closes the open question in Section 4 about whether Townhouse/Fourplex listings match a 5+ unit inventory: mostly they do not. But `type` must NOT be used to scope capture — the label is poster-chosen and wrong in both directions (a "Fourplex" resolved to an 8-unit building, "Townhouse" to a 311-unit complex). Keep the Apartment + Townhouse + Fourplex, no-condo convention as is |
+| 2026-08-18 | Multi-address range notation (`14519/14525 92 Street`) costs real matches. Expanding to each endpoint lifts matches **740 → 785 (+6.1%)**. Implemented as `tools/address_variants.py` in the companion repo, deliberately not folded into its audited `normalize.py` |
+| 2026-08-18 | `thumb2` is now load-bearing rather than "present but unused" (Section 4): **1,321 of 1,322 listings carry an image URL**, and with no coordinates on the Inventory side the listing photo is the *primary* verification channel for matching. Surfaced as a clickable link in the review workbook — the human clicks, the browser fetches, nothing here issues a request to Rentfaster |
+| 2026-08-25 | map.json availability is now parsed on the snapshot too (`property-merge-pipeline/tools/snapshot_rents.py`): all 27 distinct values resolve, 1,019 of 1,290 available now. Grain still differs — map.json is one value per LISTING, detail is per suite type, so only detail captures support the all-future-dated inference |
+| 2026-08-25 | Availability parsed into `available_date` + `available_immediate` per suite, rolled up to `vacancy_signal` per listing. Neil's rule: "Immediate" proves vacancy exists but not how much; all-future-dated with no immediate is evidence of no current vacancy. Counts are suite types not units, and only the detail capture has the grain for it -- map.json carries availability per listing |
+| 2026-08-25 | A listing address disagreeing with Inventory by a few civic numbers is often the same building, not a missing one. Meadow Mews advertises at 12408 161 Avenue NW; Inventory holds it at 12404 as a 4-structure complex. Same-side (even) differences of 4 or less are candidates, opposite-side (odd) ones are across the street and are not. Review queue lives in the companion repo as `tools/civic_near_miss.py` |
+| 2026-08-25 | A building can be in CoStar and still be absent from this project's CoStar pull. Meadow Mews carries CoStar ID 11289926 but appears in none of the three exports, which cover Secondary Type = Apartments only — it is a condo corporation. Inventory has it from FileMaker alone. Absence from the pull is not absence from CoStar |
+| 2026-08-18 | Highest-value next action is **a second capture**, not code. Only one snapshot exists (2026-08-11), so `rent_changes()` and `promo_changes()` have never run against real history, and open question 7 (listing_id stability on dormancy/reactivation) stays unanswerable. That question determines whether the permanent-match design is even correct, so it gates the build |
 | 2026-08-14 | **map.json price/beds fields are FILTER-DEPENDENT -- they describe only the suites matching the active query, not the whole property.** Found comparing the same listing across two captures: id 757246 returns `price2` 1292 / `beds2` 2 under a 1050-1350 price band, but `price2` 1477 / `beds2` 3 with no price filter; id 578904 returns `price2` null / `beds2` null banded vs 1899 / 3 unbanded. Two consequences. First, this retroactively justifies rejecting price-band capture (2026-08-11 entry): it would have silently recorded truncated rent ranges for every multi-suite property, corrupting exactly the buildings the rent table most needs. Second and still open: the same mechanism may apply to the property-type filter -- a building advertising both an excluded type (Condo Unit) and an included one could be reporting a range clipped to only the included suites. Not yet tested; worth one capture with all types enabled compared against the standard filter on the same area before Step 4 relies on these ranges |
 | 2026-08-11 | Explored price-band filtering (`price_min`/`price_max`) as a possible replacement for geographic quadrants -- confirmed it's a real server-side filter, and a location-search (no draw tool) + single band returned 457 unique citywide listings in one shot, no drawing. Not adopted: a 1050-1350 test band returned zero listings whose price/price2 straddled the band edges, suggesting (unconfirmed) the filter may require a listing's *entire* range inside the band. Real listings in the already-captured sections have spreads up to $4,682 (e.g. id 531465: $1,818-$6,500, studio/1-bed to 3-bed) -- if the straddle theory holds, price banding would silently drop exactly the wide-spread multi-suite-type buildings the rent table most needs, with no band width that both contains the spread and stays under the 500 cap. Designed but did not run a targeted test (tight draw box around 3 known wide-spread listings + a 1050-3000 band) to confirm before committing. Decision: keep geographic sectioning -- it is already proven clean and safe; the price-band gap risk isn't worth resolving right now. Revisit if geographic sectioning becomes too slow |
 | 2026-08-10 | Started first real monthly pull (in progress, not yet ingested): draw-tool quadrant captures for Edmonton, snapshot_date 2026-08-10. First quadrant (NW Edmonton) captured but flagged for re-draw -- filter was Apartment+Fourplex only, missing Townhouse/Triplex from the documented convention. Paused mid-pull to start a fresh session; next session should confirm filter is Apartment+Townhouse+Triplex+Fourplex (no condo) before continuing, then resume drawing remaining quadrants |
@@ -459,7 +695,7 @@ rf_data/
 | 2026-11-04 | `rent_special` is a flag only; map.json never carries the terms. Added title-parsed `special_type` (months_free / cash_off / percent_off / free_perk / deposit / unspecified_promo / none), `months_free`, `months_free_upto`, `promo_dollars`, `promo_components` (`parse_promo_terms`, auto-migrates the store on next ingest). Only 32 of 198 Nov rent_special listings have readable terms in the title (22 months_free, 3 cash_off, 4 free_perk, 2 unspecified, 1 percent_off ...); 166 have none. Title text alone is not proof an offer is live. 100 of the 198 have carried the flag in all four snapshots (standing feature), 53 only in Nov. Face rent in map.json is NOT net of the promo, so a "1 month free" listing's effective rent is ~8% lower than shown. `other_promotion` is mostly an opaque standing flag (bare property-name titles; only 12 of 130 have terms); `move_in_gift` is 5 listings |
 | 2026-11-04 | CORRECTION to the "rent specials shedding" read: the Oct rent_special spike (14.7% / 15.9% / 20.7% / 15.1%) was ONE poster's campaign. Poster 651 (largest account, 77-97 listings) had 0 rent specials in Aug, Sep, Nov and 76 of 77 in Oct (56 of the 88 Oct->Nov drops, 52 of the 62 Sep->Oct adds). Excluding it the share is flat: 15.9 / 17.1 / 15.6 / 16.2%. 651 also holds 76 of 130 `other_promotion` flags, which it carries all four months. Only 9 of 88 dropped rent_special listings changed their title, so landlords rarely edit titles when an offer ends. General lesson: check poster concentration before reading any promo or rent move as a market signal |
 | 2026-11-04 | Added `campaign_posters()` (posters whose promo-code share swings >= 50 pts between consecutive snapshots with >= 15 listings live) and a poster-adjusted view: `snapshot_stats(..., exclude_posters=)`, `compare()` now returns `promo_share_ex_campaign` and `campaign_posters`, and the trend chart's incentive panel draws rent special excluding campaign posters as a dashed line. Rents are NOT poster-adjusted yet; only promo shares are |
-| 2026-11-04 | Detail-page capture documented and ingested. Neil's userscript (not in this repo or any of his other GitHub repos searched; likely lives only in Tampermonkey) exports `rf_detail_*.json` = {kind: rentfaster_detail, captures[{ts, url, listing_id, source: userscript:ld+json, promotions{raw, promos[{type, headline, body, fields}], html}, data: schema.org ItemPage -> mainEntity ApartmentComplex}]}. mainEntity carries `containsPlace[]` (one entry per suite group: beds, baths, sqft, rent in potentialAction.price, availability, utilities included; description "Multiple units matching" = grouped identical units), `priceRange`, geo, address, amenityFeature[], petsAllowed, parentOrganization (landlord name). New `src/rentfaster_detail_ingest.py` writes `detail_listings` / `detail_suites` / `detail_promos` (parquet + CSV) keyed on (listing_id, captured_at), idempotent, repeat visits kept. First file: 82 pages (15 Aug / 9 Sep / 56 Oct / 2 Nov), 246 suite rows (219 with sqft, 135 with utilities), 27 promo entries (20 Rent Special, 7 Promo Available), 72 of 82 in the snapshot store. Promo terms ARE here (19 months_free, 2 cash_off, 4 deposit); valid-from dates are often old (6 of 27 older than a year, 2 expired at capture), so a flag does not mean a current offer. Check vs map.json (`compare_with_map`, nearest snapshot, median 10 days apart): detail min/max rent matches map price_lo/hi within $1 on ~78% (mismatches mostly small price moves in the days between); map bed range disagreed with detail on a few listings (e.g. 578904 map 1-2 vs detail 1-4, 647063 map 2-3 vs detail 3-3), so the map tier is not always right. This is a hand-picked sample, not a market sample |
+| 2026-11-04 | Detail-page capture documented and ingested. Neil's userscript (CORRECTION 2026-11-12 after branch consolidation: a copy IS in this repo at `tools/rf_detail_capture.user.js`, from the edmonton-inventory-rental-align branch; the live Tampermonkey copy may be newer) exports `rf_detail_*.json` = {kind: rentfaster_detail, captures[{ts, url, listing_id, source: userscript:ld+json, promotions{raw, promos[{type, headline, body, fields}], html}, data: schema.org ItemPage -> mainEntity ApartmentComplex}]}. mainEntity carries `containsPlace[]` (one entry per suite group: beds, baths, sqft, rent in potentialAction.price, availability, utilities included; description "Multiple units matching" = grouped identical units), `priceRange`, geo, address, amenityFeature[], petsAllowed, parentOrganization (landlord name). New `src/rentfaster_detail_ingest.py` writes `detail_listings` / `detail_suites` / `detail_promos` (parquet + CSV) keyed on (listing_id, captured_at), idempotent, repeat visits kept. First file: 82 pages (15 Aug / 9 Sep / 56 Oct / 2 Nov), 246 suite rows (219 with sqft, 135 with utilities), 27 promo entries (20 Rent Special, 7 Promo Available), 72 of 82 in the snapshot store. Promo terms ARE here (19 months_free, 2 cash_off, 4 deposit); valid-from dates are often old (6 of 27 older than a year, 2 expired at capture), so a flag does not mean a current offer. Check vs map.json (`compare_with_map`, nearest snapshot, median 10 days apart): detail min/max rent matches map price_lo/hi within $1 on ~78% (mismatches mostly small price moves in the days between); map bed range disagreed with detail on a few listings (e.g. 578904 map 1-2 vs detail 1-4, 647063 map 2-3 vs detail 3-3), so the map tier is not always right. This is a hand-picked sample, not a market sample |
 
 ## 9. Open questions
 
@@ -468,7 +704,7 @@ rf_data/
 2. Metro addresses outside Edmonton proper in Inventory: handle now or defer?
 3. Proforma template: Neil to provide format when step 6 starts.
 4. `f` field interpretation: confirm against more payloads.
-5. Detail-page JSON schema: DOCUMENTED 2026-11-04 (see Decision Log and `rentfaster_detail_ingest.py` docstring); still open: capture detail for the listings being underwritten, and decide a capture routine (currently only pages Neil happens to open).
+5. ~~Detail-page JSON schema~~ **ANSWERED 2026-08-18** (schema.org JSON-LD, documented in Section 4) and re-documented 2026-11-04 (see Decision Log and `rentfaster_detail_ingest.py` docstring; parser variant `parse_rf_detail.py`). Still open: field population rates across a larger sample, capturing detail for the listings being underwritten, and a capture routine (currently only pages Neil happens to open).
 6. Suite mix gaps (~3,100 buildings): manual fill prioritization TBD.
 7. Listing ID stability on dormancy/reactivation (partial evidence 2026-11-04: 73 IDs returned after a month's gap, see Decision Log): unknown whether a listing_id
    persists when a unit goes quiet and is re-listed later, or whether Rentfaster
