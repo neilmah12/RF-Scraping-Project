@@ -15,7 +15,7 @@ parts of this project and none contained the others. They were merged on
 | Repo | Canonical branch | Notes |
 |---|---|---|
 | `RF-Scraping-Project` (this repo) | `claude/sleepy-goldberg-qhpc6n` | Merge of the three lines below. Merge new work back here, do not start a parallel line. |
-| `property-merge-pipeline` (companion) | `claude/dazzling-tesla-pvwugn` | Contains all 11 other branches (verified by ancestor check 2026-11-12). Its `main` is STALE (2026-07-22, 118 commits behind); do not branch from `main`. |
+| `property-merge-pipeline` (companion) | `claude/dazzling-tesla-pvwugn` | Contains all 11 other branches (verified by ancestor check 2026-11-12). `main` was STALE (2026-07-22) until it was fast-forwarded to `dazzling-tesla` (tip `0074a94`) on 2026-11-12 at Neil's request, so `main` and `dazzling-tesla` now match. Old `main` tip was `37dc2b5` if a rollback is ever needed. |
 
 **Retired lines (kept for history, do not build on them)**
 `claude/serene-einstein-xeo6jo` (Nov 4 ingest/compare/detail work),
