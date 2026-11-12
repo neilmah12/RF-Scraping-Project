@@ -4,6 +4,47 @@ Project reference file. Written 2026-07-30. Updated 2026-08-18.
 
 **New session? Read `property-merge-pipeline/docs/HANDOFF.md` first.**
 
+## 0. Branch and handoff map (added 2026-11-12, read this before branching)
+
+Branch sprawl lost work once: by Nov 2026 four parallel branches held different
+parts of this project and none contained the others. They were merged on
+2026-11-12. Rules from now on:
+
+**Canonical branches (start every session by checking you are on one of these)**
+
+| Repo | Canonical branch | Notes |
+|---|---|---|
+| `RF-Scraping-Project` (this repo) | `claude/sleepy-goldberg-qhpc6n` | Merge of the three lines below. Merge new work back here, do not start a parallel line. |
+| `property-merge-pipeline` (companion) | `claude/dazzling-tesla-pvwugn` | Contains all 11 other branches (verified by ancestor check 2026-11-12). Its `main` is STALE (2026-07-22, 118 commits behind); do not branch from `main`. |
+
+**Retired lines (kept for history, do not build on them)**
+`claude/serene-einstein-xeo6jo` (Nov 4 ingest/compare/detail work),
+`claude/monthly-rental-capture-sections-16ogpi` (Aug-Oct captures, console helper,
+check_capture), `claude/edmonton-inventory-rental-align-mludm8` (detail schema,
+userscript, availability, Step 3 planning), `claude/colab-code-file-4xma4o`.
+All four tips are ancestors of the canonical branch. Local backup tags were
+created on 2026-11-12 (`backup/*`) but could not be pushed from the cloud container.
+
+**What lives OUTSIDE git (ask Neil for the latest copy, do not assume it matches the repo)**
+- Raw captures: `rf_captures_*.json` bundles, the Aug `CONSOLIDATED_20260811.json`, and
+  `rf_detail_*.json` detail files. Gitignored by design.
+- The authoritative `data/rf_data` store (`snapshots`, `listings_master`, detail
+  tables). Lives on Neil's machine/Colab. A cloud session rebuilds it from raw
+  files only (see 2026-11-12 Decision Log row for the exact rebuild).
+- The Colab notebook/ingest and the live Tampermonkey userscript (repo copies may be older).
+- The Inventory workbook (`inventory_merge_*.xlsx`) and `inventory_merge_v4` runs.
+- Published artifacts such as `coverage_map.html`.
+- Any hosted map/database (Cloudflare or otherwise): NOT documented anywhere in
+  either repo as of 2026-11-12. Neil to describe it (what it is, where it is
+  deployed, how edits are saved/versioned) so it can be recorded here.
+
+**Capture bundle formats the ingest accepts:** raw map.json; `{"captures":[...]}`
+(console helper / `rf_captures_*.json`); consolidated bundle with
+`snapshot_date`/`source_files`/`n_captures`/`captures`. Detail files:
+`{"kind":"rentfaster_detail","captures":[...]}` via `rentfaster_detail_ingest.py`.
+Snapshot date convention: date the bundle was captured (filename timestamp);
+two bundles on the same day (Nov 4) are ingested together as one snapshot.
+
 **Cross-repo:** listing-to-building matching, the durable-key design and the
 Edmonton assessment work now live in the companion repo
 `property-merge-pipeline` — see its `CLAUDE.md` and
@@ -696,6 +737,7 @@ rf_data/
 | 2026-11-04 | CORRECTION to the "rent specials shedding" read: the Oct rent_special spike (14.7% / 15.9% / 20.7% / 15.1%) was ONE poster's campaign. Poster 651 (largest account, 77-97 listings) had 0 rent specials in Aug, Sep, Nov and 76 of 77 in Oct (56 of the 88 Oct->Nov drops, 52 of the 62 Sep->Oct adds). Excluding it the share is flat: 15.9 / 17.1 / 15.6 / 16.2%. 651 also holds 76 of 130 `other_promotion` flags, which it carries all four months. Only 9 of 88 dropped rent_special listings changed their title, so landlords rarely edit titles when an offer ends. General lesson: check poster concentration before reading any promo or rent move as a market signal |
 | 2026-11-04 | Added `campaign_posters()` (posters whose promo-code share swings >= 50 pts between consecutive snapshots with >= 15 listings live) and a poster-adjusted view: `snapshot_stats(..., exclude_posters=)`, `compare()` now returns `promo_share_ex_campaign` and `campaign_posters`, and the trend chart's incentive panel draws rent special excluding campaign posters as a dashed line. Rents are NOT poster-adjusted yet; only promo shares are |
 | 2026-11-04 | Detail-page capture documented and ingested. Neil's userscript (CORRECTION 2026-11-12 after branch consolidation: a copy IS in this repo at `tools/rf_detail_capture.user.js`, from the edmonton-inventory-rental-align branch; the live Tampermonkey copy may be newer) exports `rf_detail_*.json` = {kind: rentfaster_detail, captures[{ts, url, listing_id, source: userscript:ld+json, promotions{raw, promos[{type, headline, body, fields}], html}, data: schema.org ItemPage -> mainEntity ApartmentComplex}]}. mainEntity carries `containsPlace[]` (one entry per suite group: beds, baths, sqft, rent in potentialAction.price, availability, utilities included; description "Multiple units matching" = grouped identical units), `priceRange`, geo, address, amenityFeature[], petsAllowed, parentOrganization (landlord name). New `src/rentfaster_detail_ingest.py` writes `detail_listings` / `detail_suites` / `detail_promos` (parquet + CSV) keyed on (listing_id, captured_at), idempotent, repeat visits kept. First file: 82 pages (15 Aug / 9 Sep / 56 Oct / 2 Nov), 246 suite rows (219 with sqft, 135 with utilities), 27 promo entries (20 Rent Special, 7 Promo Available), 72 of 82 in the snapshot store. Promo terms ARE here (19 months_free, 2 cash_off, 4 deposit); valid-from dates are often old (6 of 27 older than a year, 2 expired at capture), so a flag does not mean a current offer. Check vs map.json (`compare_with_map`, nearest snapshot, median 10 days apart): detail min/max rent matches map price_lo/hi within $1 on ~78% (mismatches mostly small price moves in the days between); map bed range disagreed with detail on a few listings (e.g. 578904 map 1-2 vs detail 1-4, 647063 map 2-3 vs detail 3-3), so the map tier is not always right. This is a hand-picked sample, not a market sample |
+| 2026-11-12 | Branch consolidation + first full rebuild. Merged serene-einstein, monthly-rental-capture-sections and edmonton-inventory-rental-align into `claude/sleepy-goldberg-qhpc6n` (all decision-log rows from all sides kept; `rentfaster_ingest.py` taken from serene-einstein after diffing the other versions, which had nothing unique beyond trivia). Companion repo audited: `dazzling-tesla` contains every other branch; `main` is stale (see Section 0). Rebuilt the store in a fresh cloud container from raw files only: Aug 11 CONSOLIDATED (1,295 properties after Fourplex purge, 3 incomplete draws, filter drift flagged: Aug had Fourplex), Sep 10 (1,256; 52.2% bbox area uncovered by complete draws, previously judged harmless because 2 capped wide sweeps were re-covered by zoomed passes, but the new area metric flags it, treat Sep coverage as lower confidence), Oct 2 (1,257), Nov 4 (two bundles, 1,307), plus the 89-page detail file (267 suite rows, 30 promo rows). Property counts match the earlier Colab figures exactly. Worked example, 8615 108 Street NW (Garneau, userId 306273): listing 645657 (market-rate, Altairus Residences) appears in all four snapshots as blended 0-3 beds $1,400-$2,850 (Aug, Sep), $1,350-$2,200 (Oct), inferred 1-2 beds $1,350-$1,850 (Nov), 1 rent cut recorded; detail page 2026-10-07 shows suites at $1,350 (1BR 460sf), $1,600 (1BR 610sf), $2,100 (2BR 946sf), heat included, so the map high end ($2,850) overstated what the detail page lists. Listing 705685 (posted 2026-10-28, Nov snapshot only) is 'Premium Room Share Unit' rooms at $700-$900 (detail 2026-11-12), classified `certain` from beds 0 only, which is WRONG for comp use: n_suite_types=3 with a single bed count does not rule out room-share or per-room pricing. Candidate rule: exclude from market comps any listing whose detail description says room share, or whose price_lo is far below the same building's other listing. Listing 716230 (Townhouse, no price, No Vacancy) seen Aug only. Two listings coexisting at one building/poster/pin is real and not an id reissue (open question 7). Not yet done: companion repo `main` fast-forward (needs Neil's approval), documenting the hosted map/database |
 
 ## 9. Open questions
 
