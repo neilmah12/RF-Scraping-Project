@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.5
+// @version      1.6
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
+// @match        https://www.rentfaster.ca/*/*/rentals*
+// @match        https://rentfaster.ca/*/*/rentals*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -27,6 +29,13 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v1.6 (2026-11-20, from the discovery session): a removed listing does not 404.
+ * It redirects, with HTTP 200, to the city results page with #listingNotFound on
+ * the address, and a listing can redirect to a sibling listing at the same
+ * address. The script now also loads on results pages (doing nothing there unless
+ * a queue is running), logs the first case as `gone` and the second as
+ * `redirected` (the sibling is kept under its own id with `redirected_from`).
  *
  * WHAT IT KEEPS  (schema documented 2026-08-18 from 4 real captures)
  * -----------------------------------------------------------------
@@ -405,7 +414,7 @@
 
   function qItems() { return jget(QKEY, []); }
   function qState() {
-    var st = jget(QSTATE, null) || { running: false, pos: 0, ranToday: 0, day: today(), sessionLeft: 0, streak: 0, reason: '', nextAt: 0, lastId: '' };
+    var st = jget(QSTATE, null) || { running: false, pos: 0, ranToday: 0, day: today(), sessionLeft: 0, streak: 0, reason: '', nextAt: 0, lastId: '', navigatingTo: '', lastGone: false };
     if (st.day !== today()) { st.day = today(); st.ranToday = 0; }
     return st;
   }
@@ -494,38 +503,33 @@
         qLog({ listing_id: target.id, status: 'bad_url', priority: target.priority, url: target.url });
         cur.pos++; qSave(cur); armNavigation(cur, q); return;
       }
+      // Remember what we are navigating to, so the next page load can tell a
+      // redirect (gone / sibling listing) from you wandering off the queue.
+      cur.navigatingTo = target.id;
+      qSave(cur);
       location.href = target.url;
     }, Math.max(0, st.nextAt - Date.now()));
     renderPanel();
   }
 
-  // Runs on every page load. Only acts when the page is the one the queue expects.
-  function queueStep() {
-    var st = qState(), q = qItems();
-    if (!st.running || !q.length) { renderPanel(); return; }
-    var id = listingId();
-    var expected = q[st.pos];
+  // A redirected capture is stored under the id of the page we actually landed on;
+  // record which queued listing sent us there.
+  function annotateRedirect(newId, fromId) {
+    var list = load(), changed = false;
+    list.forEach(function (c) {
+      if (c.listing_id === newId && !c.redirected_from) { c.redirected_from = fromId; changed = true; }
+    });
+    if (changed) save(list);
+  }
 
-    if (!expected) { qStop('queue finished', st); return; }
-    if (looksLikeChallenge() || [403, 429].indexOf(httpStatus()) !== -1) {
-      qLog({ listing_id: id, status: 'challenge', priority: expected.priority, url: location.href });
-      qStop('challenge or block page detected - queue stopped, nothing was bypassed', st);
-      return;
-    }
-    if (id !== expected.id) {
-      if (id && id === st.lastId && st.nextAt) { armNavigation(st, q); return; }  // reloaded the page we just finished
-      qStop('you left the queue (page ' + (id || location.pathname) + ' is not the expected listing) - paused', st);
-      return;
-    }
+  // Record the outcome for the queued item, apply the stop rules, schedule the next page.
+  function finishItem(st, q, expected, status, landedId) {
+    if (status === 'captured' || status === 'redirected') st.streak = 0;
+    else if (status === 'no_data' || status === 'redirected_no_data') st.streak++;
+    qLog({ listing_id: expected.id, landed_id: landedId || '', status: status, priority: expected.priority, url: location.href });
 
-    var held = holdsCurrent(id);
-    var status;
-    if (held) { status = 'captured'; st.streak = 0; }
-    else if (looksGone()) status = 'gone';
-    else { status = 'no_data'; st.streak++; }
-    qLog({ listing_id: id, status: status, priority: expected.priority, url: location.href });
-
-    st.ranToday++; st.sessionLeft--; st.lastId = id;
+    st.ranToday++; st.sessionLeft--;
+    st.lastId = landedId || ''; st.navigatingTo = ''; st.lastGone = (status === 'gone');
     st.pos = nextIndex(st.pos + 1, q);
     qSave(st);
 
@@ -535,6 +539,57 @@
     if (st.sessionLeft <= 0) { qStop('session page limit reached', st); return; }
     if (st.pos >= q.length) { qStop('queue finished', st); return; }
     scheduleNext(st, q, false);
+  }
+
+  // Runs on every page load the script matches. Only acts when the page is one
+  // the queue expects, or the redirect target of the page it just navigated to.
+  function queueStep() {
+    var st = qState(), q = qItems();
+    if (!st.running || !q.length) { renderPanel(); return; }
+    var id = listingId();
+    var onListing = /\/properties\//.test(location.pathname);
+    var expected = q[st.pos];
+
+    if (!expected) { qStop('queue finished', st); return; }
+    if (looksLikeChallenge() || [403, 429].indexOf(httpStatus()) !== -1) {
+      qLog({ listing_id: id, landed_id: id, status: 'challenge', priority: expected.priority, url: location.href });
+      qStop('challenge or block page detected - queue stopped, nothing was bypassed', st);
+      return;
+    }
+
+    // Results page. Rentfaster sends a removed listing here, with HTTP 200 and
+    // #listingNotFound on the address, so it cannot be caught as a 404.
+    if (!onListing) {
+      if (st.navigatingTo === expected.id) {
+        if (/listingNotFound/i.test(location.hash + location.search)) { finishItem(st, q, expected, 'gone', ''); return; }
+        qLog({ listing_id: expected.id, landed_id: '', status: 'unexpected_redirect', priority: expected.priority, url: location.href });
+        qStop('redirected to a results page without the not-found marker - queue stopped', st);
+        return;
+      }
+      if (st.lastGone && st.nextAt) { armNavigation(st, q); return; }   // reloaded the results page after a gone listing
+      qStop('you left the queue (now on a non-listing page) - paused', st);
+      return;
+    }
+
+    if (id !== expected.id) {
+      // Redirected to a different listing (for example a sibling at the same
+      // address). Keep that page's capture under its own id and move on.
+      if (st.navigatingTo === expected.id && id) {
+        var got = holdsCurrent(id);
+        if (got) annotateRedirect(id, expected.id);
+        finishItem(st, q, expected, got ? 'redirected' : 'redirected_no_data', id);
+        return;
+      }
+      if (id && id === st.lastId && st.nextAt) { armNavigation(st, q); return; }  // reloaded the page we just finished
+      qStop('you left the queue (page ' + (id || location.pathname) + ' is not the expected listing) - paused', st);
+      return;
+    }
+
+    var status;
+    if (holdsCurrent(id)) status = 'captured';
+    else if (looksGone()) status = 'gone';
+    else status = 'no_data';
+    finishItem(st, q, expected, status, id);
   }
 
   function loadQueueFile() {
@@ -557,7 +612,7 @@
         });
         if (!items.length) { alert('No valid https://www.rentfaster.ca/properties/ URLs in that file.'); return; }
         jset(QKEY, items);
-        qSave({ running: false, pos: 0, ranToday: qState().ranToday, day: today(), sessionLeft: 0, streak: 0, reason: 'queue loaded (' + items.length + ' pages' + (bad ? ', ' + bad + ' skipped' : '') + ')', nextAt: 0, lastId: '' });
+        qSave({ running: false, pos: 0, ranToday: qState().ranToday, day: today(), sessionLeft: 0, streak: 0, reason: 'queue loaded (' + items.length + ' pages' + (bad ? ', ' + bad + ' skipped' : '') + ')', nextAt: 0, lastId: '', navigatingTo: '', lastGone: false });
         renderPanel();
       };
       rd.readAsText(f);
@@ -593,8 +648,8 @@
   function downloadQueueLog() {
     var log = jget(QLOG, []);
     if (!log.length) { alert('Queue log is empty.'); return; }
-    var csv = 'ts,listing_id,status,priority,url\n' + log.map(function (r) {
-      return [r.ts, r.listing_id, r.status, r.priority, r.url].map(function (x) { return '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"'; }).join(',');
+    var csv = 'ts,listing_id,landed_id,status,priority,url\n' + log.map(function (r) {
+      return [r.ts, r.listing_id, r.landed_id, r.status, r.priority, r.url].map(function (x) { return '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"'; }).join(',');
     }).join('\n');
     var a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -644,16 +699,23 @@
     setTimeout(queueStep, CFG.settleMs);
   }
 
-  var added = capture();
-  badge();
-  queueInit();
-  if (added) console.log('[rf-detail] captured listing ' + listingId() + '. Total: ' + summary().listings);
+  var onListingPage = /\/properties\//.test(location.pathname);
+  if (onListingPage) {
+    var added = capture();
+    badge();
+    queueInit();
+    if (added) console.log('[rf-detail] captured listing ' + listingId() + '. Total: ' + summary().listings);
 
-  // Some pages inject the JSON-LD slightly late.
-  if (!added) setTimeout(function () {
-    if (capture()) {
-      var el = document.getElementById('rf-detail-badge');
-      if (el) { var s = summary(); el.textContent = s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇'; }
-    }
-  }, 1800);
+    // Some pages inject the JSON-LD slightly late.
+    if (!added) setTimeout(function () {
+      if (capture()) {
+        var el = document.getElementById('rf-detail-badge');
+        if (el) { var s = summary(); el.textContent = s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇'; }
+      }
+    }, 1800);
+  } else if (qState().running) {
+    // Results page reached during a queue run (removed listing): no capture or
+    // badge here, only the queue's own handling.
+    queueInit();
+  }
 })();
