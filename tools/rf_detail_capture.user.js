@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.6
+// @version      1.7
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -29,6 +29,14 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v1.7 (2026-11-23): listing pages also keep the Floor Plans block as read from the
+ * page (`floorplans`: per-suite raw text lines plus a light parse of deposit,
+ * furnished, lease term, availability, utilities, sqft). It is stored beside the
+ * JSON-LD, and on its own (source `userscript:dom`) when a page has no usable
+ * JSON-LD. The queue now retries a no-capture page once after 4 seconds and
+ * logs WHY a page produced no data (`note` column), instead of just `no_data`.
+ * Errors inside the promotions or floor-plan readers can no longer abort a capture.
  *
  * v1.6 (2026-11-20, from the discovery session): a removed listing does not 404.
  * It redirects, with HTTP 200, to the city results page with #listingNotFound on
@@ -193,7 +201,7 @@
     var seen = {}, lines = [];
     parts.forEach(function (line) {
       if (line.length > 400) line = line.slice(0, 400);
-      if (seen[line]) return;          // the walk can surface a value twice
+      if (seen[line]) return; // the walk can surface a value twice
       seen[line] = 1;
       lines.push(line);
     });
@@ -272,6 +280,89 @@
     return { raw: raw, promos: promos, html: html };
   }
 
+
+  // --- floor plans (v1.7) -----------------------------------------------------
+  // The Floor Plans block is server-rendered. Every suite sits in an element with
+  // data-unitname="2 beds, 1 bath, $1559" and its detail lines inside: rent, baths,
+  // square feet, furnished, lease term, availability, utilities, deposit. The
+  // JSON-LD carries only some of that (no deposit, furnished or lease term), and
+  // on a page whose JSON-LD is unusable this is the only place the suites exist.
+  // Raw lines are always kept so a wrong parse can be fixed offline.
+  var AVAIL = /^(Immediate|No Vacancy|Call for Availability|Negotiable|[A-Za-z]{3,9}\.? \d{1,2}(, ?\d{4})?)$/;
+
+  // Text of an element as an ordered list of text-node strings. Walking text nodes
+  // (not leaf elements) keeps mixed content such as "825 ft<sup>2</sup>" intact.
+  function leafLines(root, cap) {
+    var lines = [];
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false), n;
+    while ((n = w.nextNode()) && lines.length < cap) {
+      var par = n.parentElement;
+      if (par && /^(SCRIPT|STYLE|NOSCRIPT)$/.test(par.tagName)) continue;
+      var s = (n.nodeValue || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+      if (s && s.length < 240) lines.push(s);
+    }
+    return lines;
+  }
+
+  function parseUnit(unitname, lines) {
+    var out = { beds: '', baths: '', rent: null, sqft: null, furnished: '', lease_term: '',
+                availability: '', utilities: '', deposit: '' };
+    var m = String(unitname || '').match(/^(.*?),\s*([\d.]+)\s*baths?,\s*\$([\d,.]+)/i);
+    if (m) { out.beds = m[1].trim(); out.baths = m[2]; out.rent = parseFloat(m[3].replace(/,/g, '')); }
+    var i, util = [], inUtil = false;
+    for (i = 0; i < lines.length; i++) {
+      var l = lines[i];
+      if (/^Utilities Included:?$/i.test(l)) { inUtil = true; continue; }
+      if (/^Deposit:?$/i.test(l)) {
+        inUtil = false;
+        if (lines[i + 1] && /^\$?[\d,.]+/.test(lines[i + 1])) out.deposit = lines[i + 1];
+        continue;
+      }
+      if (inUtil) { if (!/^(•|&bullet;|•)$/.test(l)) util.push(l); continue; }
+      if (/^(un|partially )?furnished$/i.test(l)) out.furnished = l;
+      else if (/^(long|short) term$|^month[- ]to[- ]month$|^\d+\s*months?$/i.test(l)) out.lease_term = l;
+      else if (!out.availability && AVAIL.test(l)) out.availability = l;
+      else if (out.sqft === null && /^\d[\d,.]*\s*ft/i.test(l)) out.sqft = parseFloat(l.replace(/,/g, ''));
+      else if (out.sqft === null && /^\d[\d,.]*$/.test(l) && /^ft/i.test(lines[i + 1] || '')) out.sqft = parseFloat(l.replace(/,/g, ''));
+    }
+    out.utilities = util.join('|');
+    return out;
+  }
+
+  function readFloorPlans() {
+    var els = document.querySelectorAll('[data-unitname]');
+    if (!els.length) return null;
+    var units = [], sample = '';
+    for (var k = 0; k < els.length && k < 60; k++) {
+      var el = els[k];
+      var lines = leafLines(el, 60);
+      // the suite-group header ("2 Bedrooms", "Apartment", "1 unit") sits just outside the element
+      var group = [], a = el.parentElement, up = 0;
+      while (a && up++ < 5) {
+        if (/\b\d+\s*units?\b/i.test((a.textContent || '').slice(0, 400))) { group = leafLines(a, 6); break; }
+        a = a.parentElement;
+      }
+      units.push({
+        key: el.getAttribute('data-sublisting') || '',
+        unitname: el.getAttribute('data-unitname') || '',
+        group: group.slice(0, 4),
+        lines: lines,
+        parsed: parseUnit(el.getAttribute('data-unitname'), lines)
+      });
+      if (!sample) { try { sample = (el.outerHTML || '').slice(0, 4000); } catch (e) {} }
+    }
+    return { units: units, sample_html: sample };
+  }
+
+  // Run a reader without letting an exception abort the whole capture.
+  function safely(fn, label) {
+    try { return fn(); }
+    catch (e) {
+      (window.__rfdErrors = window.__rfdErrors || []).push(label + ': ' + (e && e.message));
+      return null;
+    }
+  }
+
   function capture() {
     var id = listingId();
     if (!id) return 0;
@@ -288,29 +379,41 @@
       list = list.filter(function (c) { return c.listing_id !== id; });
     }
 
-    var payloads = readLinkedData();
-    if (!payloads.length) return 0;
+    var payloads = safely(readLinkedData, 'ld+json') || [];
+    var floor = safely(readFloorPlans, 'floorplans');
+    var hasFloor = !!(floor && floor.units && floor.units.length);
+    if (!payloads.length && !hasFloor) return 0;
 
-    var promotions = readPromotions();
-    payloads.forEach(function (p) {
-      list.push({
-        ts: new Date().toISOString(),
-        url: location.href,
-        listing_id: id,
-        source: 'userscript:ld+json',
-        promotions: promotions,
-        data: p
+    var promotions = safely(readPromotions, 'promotions');
+    var errs = window.__rfdErrors ? window.__rfdErrors.slice(-3) : null;
+    var now = new Date().toISOString();
+    if (payloads.length) {
+      payloads.forEach(function (p) {
+        var rec = { ts: now, url: location.href, listing_id: id, source: 'userscript:ld+json',
+                    promotions: promotions, data: p };
+        if (hasFloor) rec.floorplans = floor;
+        if (errs) rec.capture_errors = errs;
+        list.push(rec);
       });
-    });
-    if (!save(list)) return 0;   // quota hit: do not report a capture that was not stored
-    return payloads.length;
+    } else {
+      // No usable JSON-LD, but the page has its Floor Plans block: keep that.
+      var rec2 = { ts: now, url: location.href, listing_id: id, source: 'userscript:dom',
+                   promotions: promotions, data: null, floorplans: floor };
+      if (errs) rec2.capture_errors = errs;
+      list.push(rec2);
+    }
+    if (!save(list)) return 0; // quota hit: do not report a capture that was not stored
+    return payloads.length || 1;
   }
 
   function summary() {
     var list = load();
     var suites = 0, withSqft = 0, withPromo = 0;
     list.forEach(function (c) {
-      var places = (c.data.mainEntity && c.data.mainEntity.containsPlace) || [];
+      var places = (c.data && c.data.mainEntity && c.data.mainEntity.containsPlace) || [];
+      if (!places.length && c.floorplans && c.floorplans.units) places = c.floorplans.units.map(function (u) {
+        return { floorSize: u.parsed && u.parsed.sqft ? { value: u.parsed.sqft } : null };
+      });
       suites += places.length;
       places.forEach(function (p) { if (p.floorSize && p.floorSize.value) withSqft++; });
       if (c.promotions && c.promotions.promos && c.promotions.promos.length) withPromo++;
@@ -476,6 +579,28 @@
     return /not found|no longer available|page unavailable|404/.test(t + ' ' + ht);
   }
 
+
+  // Why did a page that is not a removed listing give nothing? Recorded in the queue
+  // log so the next failure explains itself.
+  function diagnoseNoData() {
+    var bits = [];
+    try {
+      var tags = document.querySelectorAll('script[type="application/ld+json"]'), ok = 0, main = 0, bad = 0, empty = 0;
+      for (var i = 0; i < tags.length; i++) {
+        var s = (tags[i].textContent || '').trim();
+        if (!s) { empty++; continue; }
+        try { var o = JSON.parse(s); ok++; if (o && o.mainEntity) main++; } catch (e) { bad++; }
+      }
+      bits.push('ld+json tags=' + tags.length + ' empty=' + empty + ' parsed=' + ok + ' withMainEntity=' + main + ' unparsable=' + bad);
+      bits.push('floorplan units=' + document.querySelectorAll('[data-unitname]').length);
+      bits.push('readyState=' + document.readyState);
+      bits.push('bodyChars=' + ((document.body && document.body.innerText) || '').length);
+      bits.push('title=' + (document.title || '').slice(0, 60));
+      if (window.__rfdErrors && window.__rfdErrors.length) bits.push('errors=' + window.__rfdErrors.slice(-2).join(' / '));
+    } catch (e) { bits.push('diagnose failed: ' + (e && e.message)); }
+    return bits.join('; ');
+  }
+
   function qStop(reason, st) {
     st = st || qState();
     st.running = false; st.reason = reason; st.nextAt = 0;
@@ -523,10 +648,10 @@
   }
 
   // Record the outcome for the queued item, apply the stop rules, schedule the next page.
-  function finishItem(st, q, expected, status, landedId) {
-    if (status === 'captured' || status === 'redirected') st.streak = 0;
+  function finishItem(st, q, expected, status, landedId, note) {
+    if (status === 'captured' || status === 'captured_dom' || status === 'redirected') st.streak = 0;
     else if (status === 'no_data' || status === 'redirected_no_data') st.streak++;
-    qLog({ listing_id: expected.id, landed_id: landedId || '', status: status, priority: expected.priority, url: location.href });
+    qLog({ listing_id: expected.id, landed_id: landedId || '', status: status, priority: expected.priority, url: location.href, note: note || '' });
 
     st.ranToday++; st.sessionLeft--;
     st.lastId = landedId || ''; st.navigatingTo = ''; st.lastGone = (status === 'gone');
@@ -566,7 +691,7 @@
         qStop('redirected to a results page without the not-found marker - queue stopped', st);
         return;
       }
-      if (st.lastGone && st.nextAt) { armNavigation(st, q); return; }   // reloaded the results page after a gone listing
+      if (st.lastGone && st.nextAt) { armNavigation(st, q); return; } // reloaded the results page after a gone listing
       qStop('you left the queue (now on a non-listing page) - paused', st);
       return;
     }
@@ -580,16 +705,29 @@
         finishItem(st, q, expected, got ? 'redirected' : 'redirected_no_data', id);
         return;
       }
-      if (id && id === st.lastId && st.nextAt) { armNavigation(st, q); return; }  // reloaded the page we just finished
+      if (id && id === st.lastId && st.nextAt) { armNavigation(st, q); return; } // reloaded the page we just finished
       qStop('you left the queue (page ' + (id || location.pathname) + ' is not the expected listing) - paused', st);
       return;
     }
 
-    var status;
-    if (holdsCurrent(id)) status = 'captured';
-    else if (looksGone()) status = 'gone';
-    else status = 'no_data';
-    finishItem(st, q, expected, status, id);
+    var status, note = '';
+    if (!holdsCurrent(id) && !looksGone() && !window.__rfdRetried) {
+      // Nothing stored yet and the page is not a removed-listing page: look once more
+      // after a pause before calling it no_data (slow render, late JSON-LD).
+      window.__rfdRetried = true;
+      capture();
+      setTimeout(queueStep, 4000);
+      return;
+    }
+    if (!holdsCurrent(id) && window.__rfdRetried) capture();   // second look, after the retry pause
+    if (holdsCurrent(id)) {
+      var rec = load().filter(function (c) { return c.listing_id === id; }).pop();
+      status = (rec && rec.source === 'userscript:dom') ? 'captured_dom' : 'captured';
+      if (status === 'captured_dom') note = 'no usable JSON-LD; Floor Plans block kept';
+      else if (window.__rfdRetried) note = 'captured on retry';
+    } else if (looksGone()) status = 'gone';
+    else { status = 'no_data'; note = diagnoseNoData(); }
+    finishItem(st, q, expected, status, id, note);
   }
 
   function loadQueueFile() {
@@ -648,8 +786,8 @@
   function downloadQueueLog() {
     var log = jget(QLOG, []);
     if (!log.length) { alert('Queue log is empty.'); return; }
-    var csv = 'ts,listing_id,landed_id,status,priority,url\n' + log.map(function (r) {
-      return [r.ts, r.listing_id, r.landed_id, r.status, r.priority, r.url].map(function (x) { return '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"'; }).join(',');
+    var csv = 'ts,listing_id,landed_id,status,priority,url,note\n' + log.map(function (r) {
+      return [r.ts, r.listing_id, r.landed_id, r.status, r.priority, r.url, r.note].map(function (x) { return '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"'; }).join(',');
     }).join('\n');
     var a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
