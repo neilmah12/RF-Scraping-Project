@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.7
+// @version      1.7.1
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -29,6 +29,11 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v1.7.1 (2026-11-23): only the tab that pressed Start acts on a running queue. Before, any other
+ * Rentfaster tab (for example a map page opened by hand) read the shared queue state and, landing on a
+ * results page, logged `unexpected_redirect` and stopped the queue. Other tabs now show
+ * "running in another tab" and capture as normal. To move the queue, Pause then Start in the new tab.
  *
  * v1.7 (2026-11-23): listing pages also keep the Floor Plans block as read from the
  * page (`floorplans`: per-suite raw text lines plus a light parse of deposit,
@@ -508,6 +513,21 @@
   var SAFE_PREFIX = 'https://www.rentfaster.ca/properties/';
   var navTimer = null, tickTimer = null;
 
+  // The queue state lives in localStorage, which every Rentfaster tab shares, and this script
+  // runs in every Rentfaster tab. Without a rule, a second tab you open (a results page, a
+  // listing) reads the shared state and acts on it: on 2026-11-23 a map page opened in another
+  // tab logged an `unexpected_redirect` and stopped a running queue. So one tab owns the queue
+  // (the one where Start was pressed, remembered in sessionStorage, which is per tab) and every
+  // other tab leaves it alone.
+  function tabId() {
+    try {
+      var id = sessionStorage.getItem('__rfdTab');
+      if (!id) { id = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); sessionStorage.setItem('__rfdTab', id); }
+      return id;
+    } catch (e) { return 'no-session-storage'; }
+  }
+  function ownsQueue(st) { return !st.ownerTab || st.ownerTab === tabId(); }
+
   function jget(key, dflt) {
     try { var v = JSON.parse(localStorage.getItem(key)); return v == null ? dflt : v; } catch (e) { return dflt; }
   }
@@ -671,6 +691,7 @@
   function queueStep() {
     var st = qState(), q = qItems();
     if (!st.running || !q.length) { renderPanel(); return; }
+    if (!ownsQueue(st)) { renderPanel(); return; }   // the queue runs in another tab
     var id = listingId();
     var onListing = /\/properties\//.test(location.pathname);
     var expected = q[st.pos];
@@ -686,9 +707,12 @@
     // #listingNotFound on the address, so it cannot be caught as a 404.
     if (!onListing) {
       if (st.navigatingTo === expected.id) {
-        if (/listingNotFound/i.test(location.hash + location.search)) { finishItem(st, q, expected, 'gone', ''); return; }
-        qLog({ listing_id: expected.id, landed_id: '', status: 'unexpected_redirect', priority: expected.priority, url: location.href });
-        qStop('redirected to a results page without the not-found marker - queue stopped', st);
+        // Also read the URL the navigation actually loaded, in case the page rewrites its own address.
+        var navUrl = '';
+        try { navUrl = (performance.getEntriesByType('navigation')[0] || {}).name || ''; } catch (e) {}
+        if (/listingNotFound/i.test(location.hash + location.search + navUrl)) { finishItem(st, q, expected, 'gone', ''); return; }
+        qLog({ listing_id: expected.id, landed_id: '', status: 'unexpected_redirect', priority: expected.priority, url: location.href, note: 'landed on ' + location.pathname.slice(0, 60) });
+        qStop('redirected to an unexpected page - queue stopped', st);
         return;
       }
       if (st.lastGone && st.nextAt) { armNavigation(st, q); return; } // reloaded the results page after a gone listing
@@ -768,7 +792,7 @@
     if (ans === null) return;
     var n = parseInt(ans, 10);
     if (!(n > 0)) return;
-    st.sessionLeft = Math.min(n, left); st.streak = 0; st.running = true; st.reason = '';
+    st.sessionLeft = Math.min(n, left); st.streak = 0; st.running = true; st.reason = ''; st.ownerTab = tabId();
     st.pos = nextIndex(st.pos, q);
     if (st.pos >= q.length) { qStop('queue finished', st); return; }
     qSave(st);
@@ -808,7 +832,7 @@
     var line = q.length
       ? 'Queue ' + Math.min(st.pos + (st.running ? 1 : 0), q.length) + '/' + q.length + ' · today ' + st.ranToday + '/' + CFG.dailyCap
       : 'No queue loaded';
-    var status = st.running ? (mins ? 'next page in ' + mins + 's' : 'working…') : (st.reason || 'idle');
+    var status = st.running ? (!ownsQueue(st) ? 'running in another tab (Pause here to take over)' : (mins ? 'next page in ' + mins + 's' : 'working…')) : (st.reason || 'idle');
     el.style.background = (!st.running && /challenge|storage|no data/.test(st.reason || '')) ? '#8A2B20' : '#243b2f';
     el.innerHTML = '';
     var t = document.createElement('div'); t.textContent = line; el.appendChild(t);
@@ -825,7 +849,7 @@
     if (q.length) btn('Clear', clearQueue);
     el.appendChild(bar);
     if (tickTimer) clearInterval(tickTimer);
-    if (st.running && st.nextAt) tickTimer = setInterval(function () {
+    if (st.running && st.nextAt && ownsQueue(st)) tickTimer = setInterval(function () {
       var m = Math.max(0, Math.round((qState().nextAt - Date.now()) / 1000));
       var d = el.children[1]; if (d && qState().running) d.textContent = 'next page in ' + m + 's';
     }, 1000);
