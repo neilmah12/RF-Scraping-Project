@@ -19,6 +19,11 @@ listing-detail captures:
     Sep 01          map.json does NOT -- see the year rule below
     Negotiable      not a date and not a vacancy claim
     No Vacancy      an explicit statement of none available
+    Call for Availability
+                    availability unknown until someone calls (flag `call`). Seen on 4
+                    suite rows in the 2026-11-23 detail queue run. It is not a date, not a
+                    vacancy claim and not a statement of none, so a `call` suite blocks a
+                    `none_current` reading for its listing (see `signal`)
 
 All 27 map values parse. Anything else is returned unresolved rather than
 guessed at, and callers are expected to report it.
@@ -51,13 +56,14 @@ MONTHS = {m: i for i, m in enumerate(
 
 # Text that is not a date. "No Vacancy" is a real statement of none available;
 # "Negotiable" says nothing either way and must not be read as a vacancy.
-KEYWORDS = {"immediate": "immediate", "no vacancy": "none", "negotiable": ""}
+KEYWORDS = {"immediate": "immediate", "no vacancy": "none", "negotiable": "",
+            "call for availability": "call"}
 
 _PATTERN = re.compile(r"([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$")
 
 
 def parse(value, capture_date: str = "") -> tuple:
-    """-> (ISO date or "", flag). Flag is immediate / dated / none / "".
+    """-> (ISO date or "", flag). Flag is immediate / dated / none / call / "".
 
     `dated` covers past dates as well as future ones. Use `is_available_now`
     to collapse that into a yes/no rather than comparing strings at the call
@@ -118,7 +124,11 @@ def signal(rows: list[tuple], capture_date: str = "") -> tuple:
     `current`       at least one advertised suite type is available now
     `none_current`  every advertised suite type is future-dated, or the
                     listing states No Vacancy
-    `""`            nothing parseable -- never read as either of the above
+    `""`            nothing parseable -- never read as either of the above. Also the
+                    answer when no suite is available now and any suite is `call`
+                    (Call for Availability): that suite may be vacant, so the listing
+                    cannot be called `none_current`. `current` still wins if another
+                    suite is available now.
 
     The asymmetry is the point. `current` proves vacancy exists and says
     NOTHING about how much: the count is suite TYPES, not units, so one row
@@ -135,6 +145,8 @@ def signal(rows: list[tuple], capture_date: str = "") -> tuple:
     )
     if now:
         return "current", now, (future[0] if future else "")
+    if any(flag == "call" for _, flag in rows):
+        return "", 0, (future[0] if future else "")
     if future or any(flag == "none" for _, flag in rows):
         return "none_current", 0, (future[0] if future else "")
     return "", 0, ""
@@ -155,6 +167,8 @@ CASES = [
     ("Oct. 01, 2026", "2026-08-13", "2026-10-01", "dated"),
     ("No Vacancy", "2026-08-13", "", "none"),
     ("Negotiable", "2026-08-13", "", ""),
+    ("Call for Availability", "2026-11-23", "", "call"),
+    ("call for availability", "2026-11-23", "", "call"),
     # yearless: map.json drops the year
     ("Sep 01", "2026-08-13", "2026-09-01", "dated"),
     ("Aug 14", "2026-08-13", "2026-08-14", "dated"),
@@ -189,6 +203,14 @@ def _self_check() -> int:
         (signal([parse("No Vacancy", "2026-08-13")], "2026-08-13"), ("none_current", 0, "")),
         (signal([parse("Available now", "2026-08-13")], "2026-08-13"), ("", 0, "")),
         (signal([], "2026-08-13"), ("", 0, "")),
+        # Call for Availability: unknown, never none_current, never beats a real "now"
+        (signal([parse("Call for Availability", "2026-11-23")], "2026-11-23"), ("", 0, "")),
+        (signal([parse("Call for Availability", "2026-11-23"), parse("Dec 01, 2026", "2026-11-23")],
+                "2026-11-23"), ("", 0, "2026-12-01")),
+        (signal([parse("Call for Availability", "2026-11-23"), parse("No Vacancy", "2026-11-23")],
+                "2026-11-23"), ("", 0, "")),
+        (signal([parse("Call for Availability", "2026-11-23"), parse("Immediate", "2026-11-23")],
+                "2026-11-23"), ("current", 1, "")),
     ]
     for got, want in checks:
         ok = got == want

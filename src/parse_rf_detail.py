@@ -363,7 +363,7 @@ def rows(captures: dict[str, dict]):
                 "available_date": available_date,
                 "available_immediate": (
                     "Y" if availability.is_available_now(available_date, available_flag, date)
-                    else {"dated": "N", "none": "none"}.get(available_flag, "")),
+                    else {"dated": "N", "none": "none", "call": "call"}.get(available_flag, "")),
                 "utilities_included": props.get("Utilities Included"),
                 # containsPlace `name` is sometimes "Unit 785-205" and
                 # sometimes "1 bed, 1 bath, $999" -- the unit number is only
