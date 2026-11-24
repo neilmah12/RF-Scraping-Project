@@ -1,5 +1,46 @@
-listing_id,image_url,read_on,offer,months_free,lease_term,cash_off,read_by,notes
-755081,https://rf-images-prod-bcdn.rentfaster.ca/755081/18343073.v.ed9e9462ba268df38619fa41361e289c.jpg,2026-11-24,1 Month Free Rent; $999 security deposit; early move-in,1,,,Claude (image sent by Neil),Banner: 'Move in today and receive! 1 Month Free Rent! Security Deposit Only $999. Early Move In Available'. Limited-time; select units only
-373527,https://rf-images-prod-bcdn.rentfaster.ca/373527/19260816.v.89c65de452829f58439446361bb1b598.jpg,2026-11-24,Move in now and don't pay until Jan 1,free_until:2027-01-01,,,Claude,"Banner: 'Move in now and don't pay until Jan 1', conditions apply. Value depends on move-in date"
-462695,https://rf-images-prod-bcdn.rentfaster.ca/462695/7385978.v.89b856e4c1b4ae95133dd34fef4a42d6.jpg,2026-11-24,none,,,,Claude,Exterior photo of the building; no offer
-745242,https://rf-images-prod-bcdn.rentfaster.ca/745242/17498711.v.d01a8a133ef87632611706fc516ca7fa.jpg,2026-11-24,$250 off first month's rent (application + deposit within 24 hours),,,250,Claude,"Banner: Capital View Tower, 'Limited time offer', $250 off first month's rent if application and security deposit returned within 24 hours; terms apply (unitiiPM)"
+listing_id,image_url,read_on,offer,months_free,lease_term,cash_off,valid_until,read_by,notes
+755081,https://rf-images-prod-bcdn.rentfaster.ca/755081/18343073.v.ed9e9462ba268df38619fa41361e289c.jpg,2026-11-24,1 Month Free Rent; $999 security deposit; early move-in,1,,,,Claude (image sent by Neil),Banner: 'Move in today and receive! 1 Month Free Rent! Security Deposit Only $999. Early Move In Available'. Limited-time; select units only
+373527,https://rf-images-prod-bcdn.rentfaster.ca/373527/19260816.v.89c65de452829f58439446361bb1b598.jpg,2026-11-24,Move in now and don't pay until Jan 1,free_until:2027-01-01,,,,Claude,"Banner: 'Move in now and don't pay until Jan 1', conditions apply. Value depends on move-in date"
+462695,https://rf-images-prod-bcdn.rentfaster.ca/462695/7385978.v.89b856e4c1b4ae95133dd34fef4a42d6.jpg,2026-11-24,none,,,,,Claude,Exterior photo of the building; no offer
+745242,https://rf-images-prod-bcdn.rentfaster.ca/745242/17498711.v.d01a8a133ef87632611706fc516ca7fa.jpg,2026-11-24,$250 off first month's rent (application + deposit within 24 hours),,,250,,Claude,"Banner: Capital View Tower, 'Limited time offer', $250 off first month's rent if application and security deposit returned within 24 hours; terms apply (unitiiPM)"
+273901,https://rf-images-prod-bcdn.rentfaster.ca/273901/18250790.v.92f83fd12ef9b4a69372ae5b285a5ef8.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+275224,https://rf-images-prod-bcdn.rentfaster.ca/275224/5660542.v.8eaf44bf57d06f818186770c103c1c8a.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288623,https://rf-images-prod-bcdn.rentfaster.ca/288623/11750091.v.8658395a3ebf7c7c9aa832eea4b11e16.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288657,https://rf-images-prod-bcdn.rentfaster.ca/288657/15779158.v.a73b8977e9dd29604674369cca3c4de1.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288658,https://rf-images-prod-bcdn.rentfaster.ca/288658/8432166.v.1ee73183ebfc5963bc8359d65d930c38.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288669,https://rf-images-prod-bcdn.rentfaster.ca/288669/16408792.v.8ad6ee7f9240cbe5495672017adc4bd7.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288671,https://rf-images-prod-bcdn.rentfaster.ca/288671/15779207.v.c242ec0cd3e35e329ad46a12bed18ea4.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+288681,https://rf-images-prod-bcdn.rentfaster.ca/288681/15779230.v.e4ba3c0a95804b679486a98623d706a1.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+289578,https://rf-images-prod-bcdn.rentfaster.ca/289578/7378679.v.667e18b065ddabea97ac56055bac33e9.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+294273,https://rf-images-prod-bcdn.rentfaster.ca/294273/16167387.v.7acabba18c96a63aa8001ef7ee9ea7b4.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+294279,https://rf-images-prod-bcdn.rentfaster.ca/294279/7378195.v.7ce295a3841aa20137c592ba0434085b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+334142,https://rf-images-prod-bcdn.rentfaster.ca/334142/17498755.v.d3c8566fbcd1077d1450d2d40442c0fe.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+334154,https://rf-images-prod-bcdn.rentfaster.ca/334154/17498759.v.99388462e4a3ea510a17044f6cac0d1c.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+354691,https://rf-images-prod-bcdn.rentfaster.ca/354691/16264210.v.8b47d4cd41f6174a0b43c79257a35b3f.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+370061,https://rf-images-prod-bcdn.rentfaster.ca/370061/17498777.v.d879a0f63b1e1ccddaedf15692004c91.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+372790,https://rf-images-prod-bcdn.rentfaster.ca/372790/17498778.v.b11f8c1656d74e486401caa6eea6ca43.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+401992,https://rf-images-prod-bcdn.rentfaster.ca/401992/11548364.v.9817649abf13db049c5174fa658791dd.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+420470,https://rf-images-prod-bcdn.rentfaster.ca/420470/17498781.v.7f517f167402e256a2b8e686d8d579c4.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+433936,https://rf-images-prod-bcdn.rentfaster.ca/433936/19288971.v.cf54754e9c0823afbfecaff2b2e440e4.jpg,2026-11-24,1 Month Free Rent + $500 move-in bonus,1,,500,,Claude,"GWL Residential banner; limited time, select suites"
+433944,https://rf-images-prod-bcdn.rentfaster.ca/433944/19288987.v.00609ac7c94931c65ccee3d84d7739ef.jpg,2026-11-24,6 months free parking + $500 move-in bonus,,,500,,Claude,"GWL Residential banner; parking perk not valued in rent, select suites"
+437077,https://rf-images-prod-bcdn.rentfaster.ca/437077/17147906.v.e1741ec100b86661f370be5e3b646ea7.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+442656,https://rf-images-prod-bcdn.rentfaster.ca/442656/16586018.v.d5c7d2be2016e01ce4c1b4c663f8c0f3.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+448914,https://rf-images-prod-bcdn.rentfaster.ca/448914/18599760.v.173c67b8de699c31d4f64e19a8a49226.jpg,2026-11-24,$500 off first month's rent,,,500,,Claude,"Banner, conditions apply"
+454900,https://rf-images-prod-bcdn.rentfaster.ca/454900/19602760.v.61d966d752c79d17601a82c983ed5e51.jpg,2026-11-24,"Black Friday special: one month free, sign a lease by Dec 1 2026",1,,,2026-12-01,Claude,"Banner also states heat and water included; promotional savings in advertised rents per fine print, select suites"
+456767,https://rf-images-prod-bcdn.rentfaster.ca/456767/16910330.v.39ea71d99b14d7e00b69556bdc669af5.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+460676,https://rf-images-prod-bcdn.rentfaster.ca/460676/16156980.v.4667a35c3b33326ff10624ba695a8b3b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+460680,https://rf-images-prod-bcdn.rentfaster.ca/460680/15589143.v.b2094668f2aa894144c8b1b1e3601d8e.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+524749,https://rf-images-prod-bcdn.rentfaster.ca/524749/17849306.v.db4165a5ad4c423b4db22297948a75f0.jpg,2026-11-24,none,,,,,Claude,"Marketing banner (adult only, non-smoking, underground parking); no offer"
+545123,https://rf-images-prod-bcdn.rentfaster.ca/545123/16228638.v.233b741851834eff16b1aeafe6ea0120.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+552098,https://rf-images-prod-bcdn.rentfaster.ca/552098/9864704.v.ec4eb589e178b3393333ee813e0db44b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+553238,https://rf-images-prod-bcdn.rentfaster.ca/553238/10867617.v.b70d408b4c5da5896dc3eef6b362e094.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+568926,https://rf-images-prod-bcdn.rentfaster.ca/568926/19423180.v.3f5a75895611e219aadd2df233556ce3.jpg,2026-11-24,November free + December free on a 12-month lease (now starting at $995),2,12,,,Claude,"Parabelle banner, limited time, select suites"
+568929,https://rf-images-prod-bcdn.rentfaster.ca/568929/19425535.v.96b9a06997f17458eb38300568161280.jpg,2026-11-24,"November free + December free on a 12-month lease (now starting at $1,195)",2,12,,,Claude,"Parabelle banner, limited time, select suites"
+598105,https://rf-images-prod-bcdn.rentfaster.ca/598105/19337958.v.27c036a5638a769d10288bad9749e273.jpg,2026-11-24,"November free + December free on a 13-month lease (now starting at $1,445)",2,13,,,Claude,"Parabelle banner, limited time, select suites"
+604212,https://rf-images-prod-bcdn.rentfaster.ca/604212/16779510.v.6ed1e7acad250d34fc9e8b3f258b7d1c.jpg,2026-11-24,1 month free on a 13-month lease + other move-in perks,1,13,,,Claude,"Equiton Living banner, select suites"
+627491,https://rf-images-prod-bcdn.rentfaster.ca/627491/14416391.v.c6c504f4c249ddddc16b6c654f3bbd60.jpg,2026-11-24,none,,,,,Claude,Ascot Arms sign (Midwest); no offer
+631855,https://rf-images-prod-bcdn.rentfaster.ca/631855/19533626.v.69f45d6ed18fcc9a670f858950d6fc84.jpg,2026-11-24,January rent free + $500 look and lease bonus,1,12,500,,Claude,"Midwest banner; 12 to 18 month terms offered, 12 used as the shortest; November move-in specials"
+690033,https://rf-images-prod-bcdn.rentfaster.ca/690033/19498377.v.ed1e145c04ba2c0325802511188ac593.jpg,2026-11-24,none,,,,,Claude,SouthBARK building sign; no offer
+700348,https://rf-images-prod-bcdn.rentfaster.ca/700348/17996087.v.0353a510a691378da9e45cb46822698e.jpg,2026-11-24,One month free,1,,,,Claude,"Banner, restrictions apply"
+717171,https://rf-images-prod-bcdn.rentfaster.ca/717171/16479050.v.f2fa9fee8024768f5131606aa4aa01e4.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+785834,https://rf-images-prod-bcdn.rentfaster.ca/785834/18781150.v.c50e1f93205bdd490cddbb892fdaae5b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer

@@ -20,6 +20,7 @@ A survey folder holds:
   data/image_reads.csv (shared by all surveys) offers read from listing images: listing_id,
                     image_url, read_on, offer, months_free, lease_term, cash_off, read_by, notes.
                     offer 'none' = read, no offer in the image (stops it being flagged again).
+                    Optional valid_until (YYYY-MM-DD): the offer stops applying after that date.
                     months_free 'free_until:YYYY-MM-DD' = "don't pay until <date>", valued at the
                     survey's as-of date.
                     Keyed by image URL, so a reading stops applying when the banner changes.
@@ -313,6 +314,14 @@ def resolve_offer(inc, hist, lid, reads, as_of, stale_days, flag) -> dict:
         return dict(inc, image_read_none=True)  # read, and the image carries no offer: nothing to do
     if rd:
         rd = dict(rd)
+        vu = (rd.get("valid_until") or "").strip()
+        if vu:
+            try:
+                if as_of > date.fromisoformat(vu[:10]):
+                    flag("incentive", f"Image offer '{rd.get('offer')}' was valid until {vu}: expired at {as_of}, not applied", call=True)
+                    return inc
+            except ValueError:
+                pass
         until = re.match(r"free_until:(\d{4}-\d{2}-\d{2})", str(rd.get("months_free") or ""))
         if until:  # 'don't pay until Jan 1': the value shrinks daily, so price it at the as-of date
             days = (date.fromisoformat(until.group(1)) - as_of).days
