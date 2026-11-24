@@ -19,6 +19,9 @@ A survey folder holds:
                     survey (phone call, secret shop); overrides listing text and image.
   data/image_reads.csv (shared by all surveys) offers read from listing images: listing_id,
                     image_url, read_on, offer, months_free, lease_term, cash_off, read_by, notes.
+                    offer 'none' = read, no offer in the image (stops it being flagged again).
+                    months_free 'free_until:YYYY-MM-DD' = "don't pay until <date>", valued at the
+                    survey's as-of date.
                     Keyed by image URL, so a reading stops applying when the banner changes.
   manual_suites.csv optional: suite rows for buildings without a listing or with phone /
                     secret-shopper / rent-roll / website rents. Columns: building_name, suite,
@@ -306,7 +309,19 @@ def resolve_offer(inc, hist, lid, reads, as_of, stale_days, flag) -> dict:
                               f"'{rd.get('offer')}'. Text wins; confirm which is current", call=True)
         return inc
     before = [c for c in hist[:-1] if has_offer(incentive_from_capture(c))]
+    if rd and not (rd.get("offer") or "").strip() or (rd and (rd.get("offer") or "").strip().lower() in ("none", "no offer")):
+        return dict(inc, image_read_none=True)  # read, and the image carries no offer: nothing to do
     if rd:
+        rd = dict(rd)
+        until = re.match(r"free_until:(\d{4}-\d{2}-\d{2})", str(rd.get("months_free") or ""))
+        if until:  # 'don't pay until Jan 1': the value shrinks daily, so price it at the as-of date
+            days = (date.fromisoformat(until.group(1)) - as_of).days
+            rd["months_free"] = round(max(days, 0) / 30.4, 2)
+            if days <= 0:
+                flag("incentive", f"Image offer '{rd.get('offer')}' ran until {until.group(1)}: expired at {as_of}, not applied")
+                return inc
+            flag("incentive", f"Image offer '{rd.get('offer')}' is worth {rd['months_free']} months free for a move-in on {as_of} "
+                              f"and shrinks daily (free until {until.group(1)})")
         if before and hero_of(before[-1]) == hero:
             flag("incentive", f"Text offer gone since {before[-1]['ts'][:10]} but the unchanged banner still shows "
                               f"'{rd.get('offer')}'. Likely a leftover banner: NOT applied, confirm by call", call=True)
@@ -536,6 +551,8 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
             # incentive quality
             if inc["net_effective"]:
                 flag("incentive", "Listing says pricing is net effective: no deduction applied")
+            elif inc.get("image_read_none"):
+                pass  # hero image already read: no offer in it
             elif not inc["display"] and not inc["months_free"] and not inc["cash_off"]:
                 hero = me.get("image") or ((latest.get("listing_js") or {}).get("slide") or "")
                 if lid in imgs:
