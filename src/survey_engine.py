@@ -12,6 +12,8 @@ A survey folder holds:
   buildings.csv     one row per building: role (subject|comp), rentfaster (URL or id, blank for
                     a building with no listing), building_name, area, address, product,
                     year_built, developer, notes. Any non-blank value overrides the capture.
+                    Optional incentive, months_free, lease_term, cash_off: an offer that exists only
+                    in the listing image is typed here and replaces whatever the text says.
   manual_suites.csv optional: suite rows for buildings without a listing or with phone /
                     secret-shopper / rent-roll / website rents. Columns: building_name, suite,
                     unit_type, sf, rent, incentive, months_free, lease_term, cash_off, status,
@@ -191,8 +193,10 @@ def incentive_sentence(text) -> str:
     """The sentence that states the offer. Promo boxes often carry page chrome ('+ 37 Photos',
     'Contact Landlord') around the real line, and descriptions carry ad copy, so only a sentence
     that names concrete terms (months free, $ off, % off, free perk) counts."""
-    text = re.sub(r"(?<=[A-Z]{2})(?=[A-Z][a-z])", ". ", str(text or ""))  # 'LEASEWhat' -> 'LEASE. What'
-    for sent in re.split(r"(?<=[.!?])\s+|\n|\u201c|\u201d", text):
+    text = str(text or "").replace("&amp;", "&")
+    text = re.sub(r"(?<=[A-Z]{2})(?=[A-Z][a-z])", ". ", text)   # 'LEASEWhat' -> 'LEASE. What'
+    text = re.sub(r"(?<=[a-z])(?=[A-Z][a-z]{2,})", ". ", text)   # 'FreeThese' -> 'Free. These'
+    for sent in re.split(r"(?<=[.!?])\s+|\n|\s\|\s|\u201c|\u201d", text):
         sent = CHROME_RE.sub("", sent)
         m = INC_SENT_RE.search(sent)
         if m:
@@ -211,8 +215,10 @@ def incentive_from_capture(c) -> dict:
     promo_txt = "\n".join("\n".join([p.get("headline") or "", p.get("body") or "",
                                      *[f"{k}: {v}" for k, v in (p.get("fields") or {}).items()]]) for p in promos)
     slogan, desc = me.get("slogan") or "", me.get("description") or ""
+    fp = c.get("floorplans") if isinstance(c.get("floorplans"), dict) else {}
+    fp_txt = re.sub(r"<[^>]+>", "\n", "\n".join(l for u in fp.get("units") or [] for l in u.get("lines") or []))
     source, sent = "", ""
-    for src, t in (("promo box", promo_txt), ("slogan", slogan), ("description", desc)):
+    for src, t in (("promo box", promo_txt), ("floor plans", fp_txt), ("slogan", slogan), ("description", desc)):
         sent = incentive_sentence(t)
         if sent:
             source = src
@@ -256,13 +262,34 @@ def _scratch():
     return _SCRATCH
 
 
-def unit_notes_by_index(c) -> dict[int, str]:
-    """v1.8 `units_js` carries per-suite notes such as 'Jr 1 Bedroom' (sublisting order)."""
+def clean_plan_name(note) -> str:
+    """'The Hinton ( 1 Bedroom | 1 Bathroom)' -> 'The Hinton'; 'Cali 1 - 1BR+Den - 1BTH' -> 'Cali 1'."""
+    n = re.sub(r"\s*\(.*?\)\s*", " ", str(note or ""))
+    n = re.split(r"\s+-\s+\d\s*BR", n, flags=re.I)[0]
+    n = " ".join(n.split())
+    return "" if re.match(r"^(multiple units matching|unit\s)", n, re.I) else n
+
+
+def unit_notes_by_index(c, S=None) -> dict[int, str]:
+    """v1.8 `units_js` names each suite's floor plan ('The Hinton', 'Blend', 'Jr 1 Bedroom').
+    Its order is not the JSON-LD order, so each suite is matched on bed count and rent
+    (then square feet), each units_js entry used once."""
+    units = [dict(u, _used=False) for u in (c.get("units_js") or [])]
     out = {}
-    for k, u in enumerate(c.get("units_js") or []):
-        note = (u.get("unit_notes") or "").strip()
-        if note:
-            out[k] = note
+    if S is None or S.empty or not units:
+        return out
+    def ub(u):
+        m = re.match(r"(\d+)", str(u.get("beds") or ""))
+        return 0 if re.search(r"bach|studio", str(u.get("beds") or ""), re.I) else (int(m.group(1)) if m else None)
+    for _, r in S.iterrows():
+        cands = [u for u in units if not u["_used"] and ub(u) == r["beds"] and num(u.get("price")) == r["rent"]]
+        if len(cands) > 1 and pd.notna(r["sqft"]):
+            cands = [u for u in cands if num(u.get("sq_feet")) == r["sqft"]] or cands
+        if cands:
+            cands[0]["_used"] = True
+            name = clean_plan_name(cands[0].get("unit_notes"))
+            if name:
+                out[int(r["suite_idx"])] = name
     return out
 
 
@@ -359,11 +386,16 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
                 continue
             S = capture_suites(latest)
             inc = incentive_from_capture(latest)
+            if b.get("incentive") or b.get("months_free") or b.get("cash_off"):
+                inc = {"display": b.get("incentive", ""), "source": "entered by hand", "net_effective": False,
+                       "months_free": num(b.get("months_free")), "cash_off": num(b.get("cash_off")),
+                       "term": num(b.get("lease_term")), "vague": False, "flagged_only": False}
+                flag("incentive", f"Incentive entered by hand: '{inc['display']}' (overrides the listing text)")
             ptypes, psnip, prate = find_parking(desc)
-            parking_txt = bf.get("parking_text") or ptypes.replace("|", ", ")
+            parking_txt = clean_parking(bf.get("parking_text")) or ptypes.replace("|", ", ")
             gone = qlog.get(lid, {}).get("status") == "gone" and qlog[lid].get("ts", "") > latest.get("ts", "")
             bld["off_market"] = gone
-            for r in collapse(S, unit_notes_by_index(latest)):
+            for r in collapse(S, unit_notes_by_index(latest, S)):
                 months = 0 if inc["net_effective"] else inc["months_free"]
                 bld["rows"].append({
                     "suite": r["suite"], "unit_type": unit_type(r["beds"], r["baths"]), "beds": r["beds"],
@@ -390,6 +422,9 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
             # incentive quality
             if inc["net_effective"]:
                 flag("incentive", "Listing says pricing is net effective: no deduction applied")
+            elif not inc["display"] and not inc["months_free"] and not inc["cash_off"]:
+                hero = me.get("image") or ((latest.get("listing_js") or {}).get("slide") or "")
+                flag("image check", f"No incentive in the listing text. Check the hero image, offers are often only there: {hero}", call=False)
             elif inc["flagged_only"]:
                 flag("incentive", "Promo box present but no readable terms: check the listing (image-only offers happen)", call=True)
             elif inc["vague"]:
@@ -621,6 +656,16 @@ def _cell_value(b, r, c):
         "Link": b["link"], "Free Months": r.get("months_free") or None,
         "Lease Term (mo)": r.get("term"), "Cash Off ($)": r.get("cash_off"),
     }.get(c)
+
+
+def clean_parking(t) -> str:
+    """The page's parking block, minus the yes/no scaffolding and anything past it."""
+    t = re.split(r"\|\s*(?:Explore Similar Rentals|Property Managed By|Contact Landlord)", str(t or ""))[0]
+    t = re.sub(r"Parking Available\s*\|\s*(Yes|No)\s*(\|\|\s*(Yes|No))?", "", t)
+    t = re.sub(r"Other Parking Details\s*\|", "", t)
+    t = re.sub(r"Pets (&amp;|&) Parking", "", t)
+    t = " ".join(x.strip(" |") for x in t.split("||") if x.strip(" |"))
+    return t[:80] + ("..." if len(t) > 80 else "")
 
 
 def _manager(me) -> str:

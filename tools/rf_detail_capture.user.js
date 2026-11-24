@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.8
+// @version      1.9
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -29,6 +29,13 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v1.9 (2026-11-24): each queue file remembers its position. Loading a different queue no longer
+ * loses your place: the outgoing queue's position is saved under the queue's content (length,
+ * first and last id, so a v1.8-loaded queue carries over), and loading that same file again resumes where it stopped. A "Go to #" button sets
+ * the position by hand. Loading is refused while a queue is running (Pause first). The building
+ * facts block now stops at "Explore Similar Rentals" / "Property Managed By" so parking lines no
+ * longer swallow the neighbouring sections (seen live on 4 Calgary pages 2026-11-24).
  *
  * v1.8 (2026-11-24): every listing also keeps the building facts block (`building`: Listing ID,
  * Year Built, Pets, # of Units, parking lines, as raw lines plus a light parse) and the page's own
@@ -389,8 +396,10 @@
     }
     var lines = leafLines(box, 120);
     var fields = {}, i, cur = null;
+    var STOP = /^(Explore Similar Rentals|Property Managed By|Similar Listings|Contact Landlord|Report|Share Listing)$/i;
     for (i = 0; i < lines.length; i++) {
       var l = lines[i];
+      if (STOP.test(l)) { lines = lines.slice(0, i); break; }
       if (BLD_LABELS.indexOf(l) !== -1) { cur = l; if (!(cur in fields)) fields[cur] = []; continue; }
       if (cur && fields[cur].length < 6) fields[cur].push(l);
     }
@@ -612,7 +621,21 @@
     if (st.day !== today()) { st.day = today(); st.ranToday = 0; }
     return st;
   }
-  function qSave(st) { jset(QSTATE, st); }
+  var QPOS = '__rfdQueuePositions';
+  function qSave(st) {
+    jset(QSTATE, st);
+    if (st.qkey) {  // remember this queue's place so loading another queue never loses it
+      var m = jget(QPOS, {});
+      m[st.qkey] = { pos: st.pos, name: st.qname || '', n: qItems().length, savedAt: new Date().toISOString() };
+      jset(QPOS, m);
+    }
+  }
+  // Keyed on the queue's CONTENT (length, first and last id), not the file name, so a renamed copy
+  // resumes too, and a queue loaded under v1.8 (which recorded no key) is parked correctly the
+  // first time another queue is loaded.
+  function queueKey(items) {
+    return [items.length, items[0].id, items[items.length - 1].id].join('|');
+  }
   function qLog(entry) {
     var log = jget(QLOG, []);
     entry.ts = new Date().toISOString();
@@ -830,6 +853,7 @@
     inp.type = 'file'; inp.accept = '.csv,text/csv';
     inp.addEventListener('change', function () {
       var f = inp.files && inp.files[0]; if (!f) return;
+      if (qState().running) { alert('Pause the running queue before loading another one. Its position is saved and comes back when you load that file again.'); return; }
       var rd = new FileReader();
       rd.onload = function () {
         var rows = parseCsv(String(rd.result || ''));
@@ -844,8 +868,15 @@
           items.push({ id: id, url: url, priority: cp >= 0 ? r[cp] : '' });
         });
         if (!items.length) { alert('No valid https://www.rentfaster.ca/properties/ URLs in that file.'); return; }
+        var prev = qState(), old = qItems();
+        if (!prev.qkey && old.length) { prev.qkey = queueKey(old); prev.qname = prev.qname || 'previous queue'; }
+        if (prev.qkey) qSave(prev);  // park the outgoing queue's position
+        var key = queueKey(items), saved = jget(QPOS, {})[key];
+        var pos = saved && saved.pos > 0 && saved.pos < items.length ? saved.pos : 0;
         jset(QKEY, items);
-        qSave({ running: false, pos: 0, ranToday: qState().ranToday, day: today(), sessionLeft: 0, streak: 0, reason: 'queue loaded (' + items.length + ' pages' + (bad ? ', ' + bad + ' skipped' : '') + ')', nextAt: 0, lastId: '', navigatingTo: '', lastGone: false });
+        qSave({ running: false, pos: pos, ranToday: prev.ranToday, day: today(), sessionLeft: 0, streak: 0,
+                reason: (pos ? 'resumed at ' + (pos + 1) + ' of ' + items.length : 'queue loaded (' + items.length + ' pages') + (bad ? ', ' + bad + ' skipped' : '') + (pos ? '' : ')'),
+                nextAt: 0, lastId: '', navigatingTo: '', lastGone: false, qkey: key, qname: f.name });
         renderPanel();
       };
       rd.readAsText(f);
@@ -872,6 +903,15 @@
     renderPanel();
   }
   function pauseQueue() { qStop('paused by you', qState()); }
+  function gotoPosition() {
+    var q = qItems(), st = qState();
+    if (st.running) { alert('Pause first.'); return; }
+    var ans = prompt('Start from which position? (1 to ' + q.length + ', now at ' + (st.pos + 1) + ')', String(st.pos + 1));
+    if (ans === null) return;
+    var n = parseInt(ans, 10);
+    if (!(n >= 1 && n <= q.length)) { alert('Enter a number from 1 to ' + q.length + '.'); return; }
+    st.pos = n - 1; st.reason = 'set to position ' + n; qSave(st); renderPanel();
+  }
   function clearQueue() {
     if (!confirm('Remove the loaded queue and its progress? (Captured listings are kept.)')) return;
     if (navTimer) clearTimeout(navTimer);
@@ -907,7 +947,8 @@
     el.style.background = (!st.running && /challenge|storage|no data/.test(st.reason || '')) ? '#8A2B20' : '#243b2f';
     el.innerHTML = '';
     var t = document.createElement('div'); t.textContent = line; el.appendChild(t);
-    var s = document.createElement('div'); s.textContent = status; s.style.opacity = '.85'; el.appendChild(s);
+    if (q.length && st.qname) { var nm = document.createElement('div'); nm.textContent = st.qname; nm.style.cssText = 'opacity:.7;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'; el.appendChild(nm); }
+    var s = document.createElement('div'); s.id = 'rf-q-status'; s.textContent = status; s.style.opacity = '.85'; el.appendChild(s);
     var bar = document.createElement('div'); bar.style.marginTop = '5px';
     function btn(label, fn) {
       var b = document.createElement('button'); b.textContent = label;
@@ -916,13 +957,14 @@
     }
     btn('Load queue', loadQueueFile);
     if (q.length) btn(st.running ? 'Pause' : 'Start', st.running ? pauseQueue : startQueue);
+    if (q.length && !st.running) btn('Go to #', gotoPosition);
     if (q.length) btn('Log', downloadQueueLog);
     if (q.length) btn('Clear', clearQueue);
     el.appendChild(bar);
     if (tickTimer) clearInterval(tickTimer);
     if (st.running && st.nextAt && ownsQueue(st)) tickTimer = setInterval(function () {
       var m = Math.max(0, Math.round((qState().nextAt - Date.now()) / 1000));
-      var d = el.children[1]; if (d && qState().running) d.textContent = 'next page in ' + m + 's';
+      var d = document.getElementById('rf-q-status'); if (d && qState().running) d.textContent = 'next page in ' + m + 's';
     }, 1000);
   }
 
