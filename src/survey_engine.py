@@ -241,7 +241,8 @@ def incentive_from_capture(c) -> dict:
     fp = c.get("floorplans") if isinstance(c.get("floorplans"), dict) else {}
     fp_txt = re.sub(r"<[^>]+>", "\n", "\n".join(l for u in fp.get("units") or [] for l in u.get("lines") or []))
     source, sent = "", ""
-    for src, t in (("promo box", promo_txt), ("floor plans", fp_txt), ("slogan", slogan), ("description", desc)):
+    un_txt = "\n".join(str(u.get("unit_notes") or "") for u in c.get("units_js") or [])
+    for src, t in (("promo box", promo_txt), ("floor plans", fp_txt), ("suite notes", un_txt), ("slogan", slogan), ("description", desc)):
         sent = incentive_sentence(t)
         if sent:
             source = src
@@ -354,7 +355,26 @@ def clean_plan_name(note) -> str:
     n = re.sub(r"\s*\(.*?\)\s*", " ", str(note or ""))
     n = re.split(r"\s+-\s+\d\s*BR", n, flags=re.I)[0]
     n = " ".join(n.split())
-    return "" if re.match(r"^(multiple units matching|unit\s)", n, re.I) else n
+    if re.match(r"^(multiple units matching|unit\s)", n, re.I):
+        return ""
+    # Generic labels ('2 Bedroom', 'Bachelor', 'Two Bedroom Two Bath') only repeat Unit Type.
+    # Kept: anything else, e.g. 'Jr 1 Bedroom', '1 Bedroom + Den', a developer's plan name.
+    if GENERIC_PLAN_RE.match(n) or re.fullmatch(r"\d{1,3}", n) or len(n) > 40:
+        return ""  # generic, a bare number, or prose (prose goes to Notes, see suite_prose)
+    return n
+
+
+def suite_prose(note) -> str:
+    """A unit note that is a sentence rather than a name ('Bright 1 bedroom unit with vinyl plank
+    flooring'): kept for Notes, since flooring and finish words are the only condition evidence."""
+    n = " ".join(str(note or "").split())
+    return (n[:90] + ("..." if len(n) > 90 else "")) if len(n) > 40 else ""
+
+
+_NUMW = r"(?:\d|one|two|three|four|five)"
+GENERIC_PLAN_RE = re.compile(
+    rf"^(?:bachelor|studio|{_NUMW}\s*(?:bed(?:room)?s?|bdrms?|br))"
+    rf"(?:\s*[,/&-]?\s*{_NUMW}(?:\.5)?\s*(?:bath(?:room)?s?|ba))?\s*(?:suite|apartment|unit|townhouse)?s?$", re.I)
 
 
 def unit_notes_by_index(c, S=None) -> dict[int, str]:
@@ -374,7 +394,8 @@ def unit_notes_by_index(c, S=None) -> dict[int, str]:
             cands = [u for u in cands if num(u.get("sq_feet")) == r["sqft"]] or cands
         if cands:
             cands[0]["_used"] = True
-            name = clean_plan_name(cands[0].get("unit_notes"))
+            raw = cands[0].get("unit_notes")
+            name = clean_plan_name(raw) or (("note:" + suite_prose(raw)) if suite_prose(raw) else "")
             if name:
                 out[int(r["suite_idx"])] = name
     return out
@@ -394,9 +415,10 @@ def collapse(S: pd.DataFrame, notes: dict[int, str]) -> list[dict]:
         flags = sorted({f for f in g["rent_flag"] if f})
         avail = set(g["available_flag"])
         status = "Available" if avail & {"immediate", "dated"} else ("Waitlist" if "none" in avail else "")
-        label_notes = sorted({notes[i] for i in g["suite_idx"] if i in notes})
+        label_notes = sorted({notes[i] for i in g["suite_idx"] if i in notes and not notes[i].startswith("note:")})
+        prose = sorted({notes[i][5:] for i in g["suite_idx"] if i in notes and notes[i].startswith("note:")})
         unit_names = [n for n in g["suite_name"] if n and not re.match(r"^\d+ beds?,", n)]
-        note = []
+        note = prose[:1]
         if len(g) > 1:
             note.append(f"{len(g)} units listed" + (f", ${min(rents):,.0f}-${max(rents):,.0f}" if len(rents) > 1 and min(rents) != max(rents) else ""))
         if "call" in avail:
