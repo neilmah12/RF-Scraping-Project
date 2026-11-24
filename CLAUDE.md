@@ -14,14 +14,14 @@ parts of this project and none contained the others. They were merged on
 
 | Repo | Canonical branch | Notes |
 |---|---|---|
-| `RF-Scraping-Project` (this repo) | `claude/sleepy-goldberg-qhpc6n` | Merge of the three lines below. Merge new work back here, do not start a parallel line. |
+| `RF-Scraping-Project` (this repo) | `main` | Created 2026-11-24 from the `claude/sleepy-goldberg-qhpc6n` tip (4f68731) plus the survey engine spec, on Neil's approval. Each session works on its own branch and merges back into `main`; do not start a parallel line. `sleepy-goldberg` is retired. GitHub's default branch was `claude/colab-code-file-4xma4o` (stale, Aug 11), which is why new sessions started from old code; Neil to switch the default to `main`. |
 | `property-merge-pipeline` (companion) | `claude/dazzling-tesla-pvwugn` | Contains all 11 other branches (verified by ancestor check 2026-11-12). `main` was STALE (2026-07-22) until it was fast-forwarded to `dazzling-tesla` (tip `0074a94`) on 2026-11-12 at Neil's request, so `main` and `dazzling-tesla` now match. Old `main` tip was `37dc2b5` if a rollback is ever needed. |
 
 **Retired lines (kept for history, do not build on them)**
 `claude/serene-einstein-xeo6jo` (Nov 4 ingest/compare/detail work),
 `claude/monthly-rental-capture-sections-16ogpi` (Aug-Oct captures, console helper,
 check_capture), `claude/edmonton-inventory-rental-align-mludm8` (detail schema,
-userscript, availability, Step 3 planning), `claude/colab-code-file-4xma4o`.
+userscript, availability, Step 3 planning), `claude/colab-code-file-4xma4o`, and `claude/sleepy-goldberg-qhpc6n` (retired 2026-11-24, now inside `main`).
 All four tips are ancestors of the canonical branch. Local backup tags were
 created on 2026-11-12 (`backup/*`) but could not be pushed from the cloud container.
 
