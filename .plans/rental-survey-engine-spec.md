@@ -121,6 +121,8 @@ Coordinates only need to be close, not matched 1:1 to a parcel (Neil, 2026-11-24
 
 Rewrite CLAUDE.md's "never automate fetching" as tiers:
 
+Outcome 2026-11-24: the risk session found no viable automated method; tier 3 is not pursued.
+
 | Tier | Example | Status |
 |---|---|---|
 | Passive | Userscript records pages Neil opens | Allowed |
@@ -133,7 +135,7 @@ Risk assessment first (Claude in Chrome, read-only): request parameters of `map.
 ## 15. Phases
 
 0. **Base and hygiene:** Drive folder + manifest; upload all historical pulls; branch decision (build on `sleepy-goldberg`); CLAUDE.md rule rewrite; userscript building-block fix; Inventory extract with coordinates (assessment join).
-1. **Survey from confirmed IDs:** refresh queue, ingest, diff, flags, Call List, combined layout export, re-read of phone rents. Survey_Map `Status` support.
+1. **Survey from confirmed IDs** (BUILT 2026-11-24, `src/survey_engine.py`; Hopewell is the first real test): refresh queue, ingest, diff, flags, Call List, combined layout export, re-read of phone rents. Survey_Map `Status` support.
 2. **Candidates:** tiered list from Inventory + RentFaster, Candidates tab, Survey_Map candidate sheet, comp memory.
 3. **Learning:** retro sessions, reject-reason labels, model once data allows.
 4. **Risk assessment, then time savers:** automated map pulls, faster queue, Calgary detail scale-up.
