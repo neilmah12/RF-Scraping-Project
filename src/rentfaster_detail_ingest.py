@@ -225,6 +225,30 @@ def _promo_rows(listing_id, captured_at, promos):
     return rows
 
 
+_RAW_YEAR = re.compile(r"Year Built\s*\n\s*(\d{4})")
+_RAW_UNITS = re.compile(r"# of Units\s*\n\s*([\d,]+)")
+
+
+def _building_facts(c):
+    """Year built, unit count and parking from a capture.
+
+    v1.8+ captures carry a `building` block read from the page. Older captures only have
+    these where the facts happened to fall inside the 4,000-character promotions text, so
+    that is used as a fallback and the source column says which one applied.
+    """
+    b = c.get("building") if isinstance(c.get("building"), dict) else None
+    if b:
+        return {"year_built": b.get("year_built"), "n_units_building": b.get("n_units"),
+                "parking_text": b.get("parking") or None, "building_source": "block"}
+    raw = (c.get("promotions") or {}).get("raw") or ""
+    y, u = _RAW_YEAR.search(raw), _RAW_UNITS.search(raw)
+    if y or u:
+        return {"year_built": int(y.group(1)) if y else None,
+                "n_units_building": int(u.group(1).replace(",", "")) if u else None,
+                "parking_text": None, "building_source": "promo_raw"}
+    return {"year_built": None, "n_units_building": None, "parking_text": None, "building_source": ""}
+
+
 def parse_detail_file(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -277,6 +301,8 @@ def parse_detail_file(path):
             "promo_types": ",".join(sorted({p["promo_type"] for p in promos if p["promo_type"]})),
             "promo_months_free": max([p["months_free"] for p in promos if p["months_free"] is not None], default=None),
             "promo_any_expired_at_capture": any(p["expired_at_capture"] for p in promos),
+            **_building_facts(c),
+            "n_units_js": len(c["units_js"]) if isinstance(c.get("units_js"), list) else None,
         })
         S.extend(suites); P.extend(promos)
     return pd.DataFrame(L), pd.DataFrame(S), pd.DataFrame(P), pd.DataFrame(F)

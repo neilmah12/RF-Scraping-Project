@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.7.1
+// @version      1.8
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -29,6 +29,15 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v1.8 (2026-11-24): every listing also keeps the building facts block (`building`: Listing ID,
+ * Year Built, Pets, # of Units, parking lines, as raw lines plus a light parse) and the page's own
+ * `window.units` suite array (`units_js`: per-suite external_id, sublisting, price, sq_feet, beds,
+ * unit_notes such as "Jr 1 Bedroom") and `window.listing` when present (`listing_js`, discovery
+ * mode, capped). Before v1.8 Year Built and # of Units survived only when they happened to fall
+ * inside the 4,000-character promotions text, which was 5 of 168 captures. Revisiting a listing
+ * whose stored copy has no `building` key now replaces it, so old captures upgrade in place.
+ * Nothing new is fetched: all three are read from the page the browser already loaded.
  *
  * v1.7.1 (2026-11-23): only the tab that pressed Start acts on a running queue. Before, any other
  * Rentfaster tab (for example a map page opened by hand) read the shared queue state and, landing on a
@@ -359,6 +368,61 @@
     return { units: units, sample_html: sample };
   }
 
+  // --- building facts + page globals (v1.8) ----------------------------------
+  // The page shows a labelled block with Listing ID, Year Built, Pets, # of Units and
+  // parking. None of it is in the JSON-LD. Find the "Listing ID" label, climb to the
+  // container that also holds "Year Built" or "# of Units", and keep its text lines.
+  var BLD_LABELS = ['Listing ID', 'Year Built', 'Pets', '# of Units', 'Smoking', 'Monthly Fee',
+                    'Parking Information', 'Street Parking', 'Parking Spots',
+                    'Total Property Parking Spots', 'Visitor Parking', 'Furnishing', 'Lease Term'];
+  function readBuilding() {
+    var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false), n, label = null;
+    while ((n = w.nextNode())) {
+      if ((n.nodeValue || '').trim() === 'Listing ID') { label = n.parentElement; break; }
+    }
+    if (!label) return null;
+    var box = label, up = 0;
+    while (box.parentElement && up++ < 8) {
+      box = box.parentElement;
+      var t = box.textContent || '';
+      if (/Year Built|# of Units/.test(t) && /Parking|Pets/.test(t)) break;
+    }
+    var lines = leafLines(box, 120);
+    var fields = {}, i, cur = null;
+    for (i = 0; i < lines.length; i++) {
+      var l = lines[i];
+      if (BLD_LABELS.indexOf(l) !== -1) { cur = l; if (!(cur in fields)) fields[cur] = []; continue; }
+      if (cur && fields[cur].length < 6) fields[cur].push(l);
+    }
+    Object.keys(fields).forEach(function (k) { fields[k] = fields[k].join(' | '); });
+    var num = function (v) { var m = String(v || '').replace(/,/g, '').match(/\d+/); return m ? parseInt(m[0], 10) : null; };
+    return {
+      lines: lines,
+      fields: fields,
+      year_built: num(fields['Year Built']),
+      n_units: num(fields['# of Units']),
+      pets: fields['Pets'] || '',
+      parking: [fields['Parking Information'], fields['Parking Spots'], fields['Total Property Parking Spots'],
+                fields['Visitor Parking'], fields['Street Parking']].filter(Boolean).join(' || ')
+    };
+  }
+
+  // window.units / window.listing are set by the page's own inline script. With
+  // @grant none the script shares the page's window, so these are plain reads.
+  function readPageGlobals() {
+    var out = {};
+    try {
+      if (Array.isArray(window.units)) out.units_js = JSON.parse(JSON.stringify(window.units.slice(0, 200)));
+    } catch (e) {}
+    try {
+      if (window.listing && typeof window.listing === 'object') {
+        var j = JSON.stringify(window.listing);
+        out.listing_js = j.length <= 8000 ? JSON.parse(j) : { _truncated: true, _keys: Object.keys(window.listing) };
+      }
+    } catch (e) {}
+    return out;
+  }
+
   // Run a reader without letting an exception abort the whole capture.
   function safely(fn, label) {
     try { return fn(); }
@@ -380,7 +444,7 @@
     // to enrich without wiping everything and starting again.
     var existing = list.filter(function (c) { return c.listing_id === id; });
     if (existing.length) {
-      if (existing.every(function (c) { return c.promotions !== undefined; })) return 0;
+      if (existing.every(function (c) { return c.promotions !== undefined && c.building !== undefined; })) return 0;
       list = list.filter(function (c) { return c.listing_id !== id; });
     }
 
@@ -390,6 +454,8 @@
     if (!payloads.length && !hasFloor) return 0;
 
     var promotions = safely(readPromotions, 'promotions');
+    var building = safely(readBuilding, 'building');
+    var globals = safely(readPageGlobals, 'globals') || {};
     var errs = window.__rfdErrors ? window.__rfdErrors.slice(-3) : null;
     var now = new Date().toISOString();
     if (payloads.length) {
@@ -397,13 +463,18 @@
         var rec = { ts: now, url: location.href, listing_id: id, source: 'userscript:ld+json',
                     promotions: promotions, data: p };
         if (hasFloor) rec.floorplans = floor;
+        rec.building = building;
+        if (globals.units_js) rec.units_js = globals.units_js;
+        if (globals.listing_js) rec.listing_js = globals.listing_js;
         if (errs) rec.capture_errors = errs;
         list.push(rec);
       });
     } else {
       // No usable JSON-LD, but the page has its Floor Plans block: keep that.
       var rec2 = { ts: now, url: location.href, listing_id: id, source: 'userscript:dom',
-                   promotions: promotions, data: null, floorplans: floor };
+                   promotions: promotions, data: null, floorplans: floor, building: building };
+      if (globals.units_js) rec2.units_js = globals.units_js;
+      if (globals.listing_js) rec2.listing_js = globals.listing_js;
       if (errs) rec2.capture_errors = errs;
       list.push(rec2);
     }
@@ -571,7 +642,7 @@
   }
 
   function holdsCurrent(id) {
-    return load().some(function (c) { return c.listing_id === id && c.promotions !== undefined; });
+    return load().some(function (c) { return c.listing_id === id && c.promotions !== undefined && c.building !== undefined; });
   }
   function nextIndex(from, q) {
     var i = from;
