@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      1.9
+// @version      2.0
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
 // @match        https://www.rentfaster.ca/*/*/rentals*
 // @match        https://rentfaster.ca/*/*/rentals*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      rf-images-prod-bcdn.rentfaster.ca
 // ==/UserScript==
 
 /*
@@ -29,6 +31,18 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v2.0 (2026-11-24): keeps a downscaled copy of each listing's HERO IMAGE, because some landlords
+ * put their offer only in the photo (The Towns at Shawnee Park: "1 Month Free Rent!" exists in no
+ * text on the page). The image is read from the page if the browser allows it; otherwise it is
+ * requested once through Tampermonkey from rf-images-prod-bcdn.rentfaster.ca (the only host this
+ * script may contact; usually served from the browser cache, since the page just showed it).
+ * Downscaled to 720px wide JPEG (~35-60KB), stored in IndexedDB (not localStorage, which would
+ * fill in ~100 listings), deduped on the image URL so an unchanged photo is stored once ever.
+ * The badge download now also writes rf_images_<ts>_<n>.json files (150 images each) holding only
+ * images not yet downloaded; after download the picture is dropped and only the URL is kept, so
+ * the same photo is never stored or downloaded twice. Turn off with localStorage __rfdCfg
+ * {"images": false}. Needs @grant, so the page's own globals are read via unsafeWindow.
  *
  * v1.9 (2026-11-24): each queue file remembers its position. Loading a different queue no longer
  * loses your place: the outgoing queue's position is saved under the queue's content (length,
@@ -416,20 +430,152 @@
     };
   }
 
-  // window.units / window.listing are set by the page's own inline script. With
-  // @grant none the script shares the page's window, so these are plain reads.
+  // window.units / window.listing are set by the page's own inline script. Since v2.0 the script
+  // runs with @grant (for the image request), which sandboxes `window`, so the page's own window
+  // is reached through unsafeWindow.
+  var PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
   function readPageGlobals() {
     var out = {};
     try {
-      if (Array.isArray(window.units)) out.units_js = JSON.parse(JSON.stringify(window.units.slice(0, 200)));
+      if (Array.isArray(PAGE.units)) out.units_js = JSON.parse(JSON.stringify(PAGE.units.slice(0, 200)));
     } catch (e) {}
     try {
-      if (window.listing && typeof window.listing === 'object') {
-        var j = JSON.stringify(window.listing);
-        out.listing_js = j.length <= 8000 ? JSON.parse(j) : { _truncated: true, _keys: Object.keys(window.listing) };
+      if (PAGE.listing && typeof PAGE.listing === 'object') {
+        var j = JSON.stringify(PAGE.listing);
+        out.listing_js = j.length <= 8000 ? JSON.parse(j) : { _truncated: true, _keys: Object.keys(PAGE.listing) };
       }
     } catch (e) {}
     return out;
+  }
+
+  // --- hero image (v2.0) -----------------------------------------------------
+  var IMG_HOST = 'https://rf-images-prod-bcdn.rentfaster.ca/';
+  var IMG = { maxWidth: 720, quality: 0.72, perFile: 150 };
+  function imagesOn() {
+    try { return JSON.parse(localStorage.getItem('__rfdCfg') || '{}').images !== false; } catch (e) { return true; }
+  }
+  function idb() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open('rfd_images', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('images', { keyPath: 'url' }); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function idbReq(db, mode, fn) {
+    return new Promise(function (res, rej) {
+      var tx = db.transaction('images', mode), st = tx.objectStore('images'), out = fn(st);
+      tx.oncomplete = function () { res(out && 'result' in out ? out.result : undefined); };
+      tx.onerror = function () { rej(tx.error); };
+    });
+  }
+  function heroUrl() {
+    var u = null;
+    readLinkedData().some(function (p) {
+      var im = p.mainEntity && p.mainEntity.image;
+      if (Array.isArray(im)) im = im[0];
+      if (im && typeof im === 'object') im = im.url || im.contentUrl;
+      if (typeof im === 'string' && im) { u = im; return true; }
+      return false;
+    });
+    if (!u && PAGE.listing && typeof PAGE.listing.slide === 'string') u = PAGE.listing.slide;
+    u = u ? u.split('?')[0] : null;
+    return u && u.indexOf(IMG_HOST) === 0 ? u : null;
+  }
+  // First choice: the copy the page already shows. Reading it back fails if the image server sends
+  // no CORS header (the canvas is "tainted"), in which case the Tampermonkey request is used.
+  function blobFromPage(url) {
+    var file = url.split('/').pop().replace(/^slide_/, '');
+    var img = Array.prototype.filter.call(document.images, function (i) {
+      return (i.currentSrc || i.src || '').indexOf(file) !== -1 && i.complete && i.naturalWidth;
+    })[0];
+    if (!img) return Promise.resolve(null);
+    return new Promise(function (res) {
+      try {
+        var c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        c.toBlob(function (b) { res(b); }, 'image/png');
+      } catch (e) { res(null); }  // SecurityError: tainted canvas
+    });
+  }
+  function blobViaGM(url) {
+    return new Promise(function (res, rej) {
+      if (typeof GM_xmlhttpRequest !== 'function') { rej(new Error('GM_xmlhttpRequest unavailable')); return; }
+      GM_xmlhttpRequest({ method: 'GET', url: url, responseType: 'blob', timeout: 20000,
+        onload: function (r) { if (r.status === 200 && r.response) res(r.response); else rej(new Error('HTTP ' + r.status)); },
+        onerror: function () { rej(new Error('request failed')); },
+        ontimeout: function () { rej(new Error('timeout')); } });
+    });
+  }
+  function downscale(blob) {
+    return createImageBitmap(blob).then(function (bmp) {
+      var w = Math.min(IMG.maxWidth, bmp.width), h = Math.round(bmp.height * w / bmp.width);
+      var c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      return new Promise(function (res) {
+        c.toBlob(function (b) {
+          var fr = new FileReader();
+          fr.onload = function () { res({ b64: String(fr.result).split(',')[1], w: w, h: h, bytes: b.size }); };
+          fr.readAsDataURL(b);
+        }, 'image/jpeg', IMG.quality);
+      });
+    });
+  }
+  function saveHeroImage(id) {
+    if (!imagesOn() || !id) return Promise.resolve('off');
+    var url = heroUrl();
+    if (!url) return Promise.resolve('no image');
+    return idb().then(function (db) {
+      return idbReq(db, 'readonly', function (st) { return st.get(url); }).then(function (have) {
+        if (have) {  // same photo already held (or already downloaded): just note this listing uses it
+          if ((have.listing_ids || []).indexOf(id) === -1) {
+            have.listing_ids = (have.listing_ids || []).concat([id]);
+            return idbReq(db, 'readwrite', function (st) { return st.put(have); }).then(function () { return 'held'; });
+          }
+          return 'held';
+        }
+        return blobFromPage(url).then(function (b) { return b || blobViaGM(url); }).then(downscale).then(function (img) {
+          var rec = { url: url, listing_id: id, listing_ids: [id], ts: new Date().toISOString(),
+                      w: img.w, h: img.h, bytes: img.bytes, jpeg_b64: img.b64, exported: false };
+          return idbReq(db, 'readwrite', function (st) { return st.put(rec); }).then(function () { return 'saved'; });
+        });
+      });
+    }).catch(function (e) {
+      (window.__rfdErrors = window.__rfdErrors || []).push('image: ' + (e && e.message));
+      return 'error';
+    });
+  }
+  function pendingImages() {
+    if (!imagesOn()) return Promise.resolve([]);
+    return idb().then(function (db) {
+      return idbReq(db, 'readonly', function (st) { return st.getAll(); });
+    }).then(function (all) { return (all || []).filter(function (r) { return !r.exported && r.jpeg_b64; }); })
+      .catch(function () { return []; });
+  }
+  function downloadImages() {
+    return pendingImages().then(function (todo) {
+      if (!todo.length) return 0;
+      var stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      for (var k = 0; k * IMG.perFile < todo.length; k++) {
+        var part = todo.slice(k * IMG.perFile, (k + 1) * IMG.perFile);
+        saveFile(JSON.stringify({ kind: 'rentfaster_images', exported_at: new Date().toISOString(), images: part.map(function (r) {
+          return { listing_id: r.listing_id, listing_ids: r.listing_ids, url: r.url, ts: r.ts, w: r.w, h: r.h, jpeg_b64: r.jpeg_b64 };
+        }) }), 'rf_images_' + stamp + '_' + (k + 1) + '.json');
+      }
+      // Keep the URL so the same photo is never fetched or downloaded again; drop the picture.
+      return idb().then(function (db) {
+        return idbReq(db, 'readwrite', function (st) {
+          todo.forEach(function (r) { delete r.jpeg_b64; r.exported = true; st.put(r); });
+        });
+      }).then(function () { return todo.length; });
+    });
+  }
+  function saveFile(text, name) {
+    var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
   // Run a reader without letting an exception abort the whole capture.
@@ -508,18 +654,22 @@
 
   function download() {
     var list = load();
-    if (!list.length) { alert('Nothing captured yet.'); return; }
-    var blob = new Blob([JSON.stringify({
-      kind: 'rentfaster_detail', captured_at: new Date().toISOString(), captures: list
-    })], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'rf_detail_' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    if (list.length) {
+      saveFile(JSON.stringify({ kind: 'rentfaster_detail', captured_at: new Date().toISOString(), captures: list }),
+               'rf_detail_' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
+    }
+    // Images go in their own files so the capture JSON stays small (v2.0).
+    downloadImages().then(function (n) {
+      if (!list.length && !n) alert('Nothing captured yet.');
+      refreshBadgeImages();
+    });
+  }
+  function refreshBadgeImages() {
+    pendingImages().then(function (p) {
+      var el = document.getElementById('rf-detail-badge');
+      if (!el) return;
+      el.textContent = el.textContent.replace(/ · \d+ img/, '').replace(/ ⬇$/, '') + (p.length ? ' · ' + p.length + ' img' : '') + ' ⬇';
+    });
   }
 
   function badge() {
@@ -978,6 +1128,7 @@
   if (onListingPage) {
     var added = capture();
     badge();
+    saveHeroImage(listingId()).then(refreshBadgeImages);
     queueInit();
     if (added) console.log('[rf-detail] captured listing ' + listingId() + '. Total: ' + summary().listings);
 

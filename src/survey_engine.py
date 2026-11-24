@@ -3,6 +3,9 @@
     # 1. queue the comps' detail pages for the userscript (run in Neil's browser)
     python3 src/survey_engine.py queue data/surveys/<id>/buildings.csv --out detail_queue_survey_<id>.csv
 
+    # 1b. after the run: pull the comps' hero images out to read image-only offers (userscript v2.0)
+    python3 src/survey_engine.py images data/surveys/<id>/ --images ../rf-data/raw/*/images/*.json --out <dir>
+
     # 2. build the workbook from the spec plus whatever detail captures exist
     python3 src/survey_engine.py build data/surveys/<id>/ \\
         --detail ../rf-data/raw/*/detail/*.json --map ../rf-data/raw/*/map/*.json \\
@@ -135,6 +138,20 @@ def load_map_history(files, ids) -> dict[str, list[dict]]:
             out.setdefault(i, []).append(r)
     for v in out.values():
         v.sort(key=lambda r: r["date"])
+    return out
+
+
+def load_images(files) -> dict[str, dict]:
+    """listing_id -> newest hero image record from userscript v2.0 `rf_images_*.json` files."""
+    out = {}
+    for f in files:
+        d = json.load(open(f, encoding="utf-8"))
+        if d.get("kind") != "rentfaster_images":
+            continue
+        for im in d.get("images") or []:
+            for i in {str(x) for x in (im.get("listing_ids") or [])} | {str(im.get("listing_id"))}:
+                if i not in out or (im.get("ts") or "") > (out[i].get("ts") or ""):
+                    out[i] = im
     return out
 
 
@@ -326,7 +343,7 @@ def collapse(S: pd.DataFrame, notes: dict[int, str]) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------- building assembly
-def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, stale_days: int):
+def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, stale_days: int, image_files=()):
     buildings = read_csv(spec_dir / "buildings.csv")
     manual = read_csv(spec_dir / "manual_suites.csv")
     if not buildings:
@@ -335,6 +352,7 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
     caps = load_captures(detail_files)
     mapsh = load_map_history(map_files, [i for i in ids if i])
     qlog = load_queue_status(queue_files)
+    imgs = load_images(image_files)
     out, flags, calls = [], [], []
 
     for b, lid in zip(buildings, ids):
@@ -424,7 +442,12 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
                 flag("incentive", "Listing says pricing is net effective: no deduction applied")
             elif not inc["display"] and not inc["months_free"] and not inc["cash_off"]:
                 hero = me.get("image") or ((latest.get("listing_js") or {}).get("slide") or "")
-                flag("image check", f"No incentive in the listing text. Check the hero image, offers are often only there: {hero}", call=False)
+                if lid in imgs:
+                    flag("image check", f"No incentive in the listing text; hero image captured {imgs[lid].get('ts', '')[:10]}. "
+                                        f"Read it (`images` command) and enter any offer in buildings.csv")
+                else:
+                    flag("image check", f"No incentive in the listing text and no hero image captured (userscript v2.0 saves it). "
+                                        f"Check the image, offers are often only there: {hero}")
             elif inc["flagged_only"]:
                 flag("incentive", "Promo box present but no readable terms: check the listing (image-only offers happen)", call=True)
             elif inc["vague"]:
@@ -706,7 +729,7 @@ def cmd_build(a):
     exp = lambda pats: sorted({f for p in (pats or []) for f in glob.glob(p)})  # noqa: E731
     as_of = date.fromisoformat(a.as_of) if a.as_of else date.today()
     blds, flags, calls = assemble(spec, exp(a.detail), exp(a.map), exp(a.queue_log), as_of,
-                                  int(settings.get("stale_days", 14)))
+                                  int(settings.get("stale_days", 14)), exp(a.images))
     write_workbook(blds, flags, calls, settings, a.out)
     recalculated = recalc(a.out)
     n = sum(len(b["rows"]) for b in blds)
@@ -735,6 +758,28 @@ def recalc(path) -> bool:
     return True
 
 
+def cmd_images(a):
+    """Write each comp's hero image to a folder so it can be read (by Neil, or by Claude in the
+    session) and any image-only offer typed into buildings.csv."""
+    import base64
+    exp = lambda pats: sorted({f for p in (pats or []) for f in glob.glob(p)})  # noqa: E731
+    imgs = load_images(exp(a.images))
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for r in read_csv(Path(a.spec) / "buildings.csv"):
+        lid = listing_id(r.get("rentfaster"))
+        if not lid:
+            continue
+        im = imgs.get(lid)
+        name = re.sub(r"[^A-Za-z0-9]+", "_", r.get("building_name") or lid).strip("_")
+        if not im:
+            print(f"[images] {lid} {r.get('building_name', '')}: no hero image captured")
+            continue
+        path = out / f"{lid}_{name}.jpg"
+        path.write_bytes(base64.b64decode(im["jpeg_b64"]))
+        print(f"[images] {lid} {r.get('building_name', '')}: {path} ({im.get('w')}x{im.get('h')}, captured {im.get('ts', '')[:10]})")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Rental survey engine")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -746,10 +791,15 @@ def main(argv=None):
     b.add_argument("--detail", nargs="*")
     b.add_argument("--map", nargs="*")
     b.add_argument("--queue-log", nargs="*")
+    b.add_argument("--images", nargs="*", help="rf_images_*.json from userscript v2.0")
     b.add_argument("--as-of")
     b.add_argument("--out", required=True)
+    im = sub.add_parser("images", help="write comps' hero images to a folder for reading")
+    im.add_argument("spec")
+    im.add_argument("--images", nargs="*", required=True)
+    im.add_argument("--out", required=True)
     a = ap.parse_args(argv)
-    (cmd_queue if a.cmd == "queue" else cmd_build)(a)
+    {"queue": cmd_queue, "build": cmd_build, "images": cmd_images}[a.cmd](a)
 
 
 if __name__ == "__main__":
