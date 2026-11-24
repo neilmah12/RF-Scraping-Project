@@ -15,8 +15,11 @@ A survey folder holds:
   buildings.csv     one row per building: role (subject|comp), rentfaster (URL or id, blank for
                     a building with no listing), building_name, area, address, product,
                     year_built, developer, notes. Any non-blank value overrides the capture.
-                    Optional incentive, months_free, lease_term, cash_off: an offer that exists only
-                    in the listing image is typed here and replaces whatever the text says.
+                    Optional incentive, months_free, lease_term, cash_off: Neil's last word for this
+                    survey (phone call, secret shop); overrides listing text and image.
+  data/image_reads.csv (shared by all surveys) offers read from listing images: listing_id,
+                    image_url, read_on, offer, months_free, lease_term, cash_off, read_by, notes.
+                    Keyed by image URL, so a reading stops applying when the banner changes.
   manual_suites.csv optional: suite rows for buildings without a listing or with phone /
                     secret-shopper / rent-roll / website rents. Columns: building_name, suite,
                     unit_type, sf, rent, incentive, months_free, lease_term, cash_off, status,
@@ -41,6 +44,9 @@ Rules (spec section 7), each a decision recorded in CLAUDE.md:
     yellow, and a call question; listing gone -> Off Market at its last captured rents, pink.
   * a rent older than stale_days (default 14) at the as-of date is flagged.
   * room shares are excluded and flagged. Nothing here ever contacts rentfaster.ca.
+  * offers: listing TEXT beats the listing IMAGE. An image reading applies only while the listing
+    still shows that exact image, never after a text offer has disappeared under an unchanged
+    banner (likely leftover), and is flagged to confirm once older than stale_days.
 """
 from __future__ import annotations
 
@@ -259,6 +265,70 @@ def incentive_from_capture(c) -> dict:
             "flagged_only": flagged_only}
 
 
+# ----------------------------------------------------------------------------- image offers
+def hero_of(c) -> str:
+    """The hero image URL a capture showed. Rentfaster image URLs carry a version hash
+    (18343073.v.ed9e...jpg), so a new banner arrives under a new URL."""
+    me = ((c.get("data") or {}).get("mainEntity") or {}) if isinstance(c.get("data"), dict) else {}
+    im = me.get("image")
+    if isinstance(im, list):
+        im = im[0] if im else None
+    if isinstance(im, dict):
+        im = im.get("url") or im.get("contentUrl")
+    im = im or (c.get("listing_js") or {}).get("slide") or ""
+    return str(im).split("?")[0]
+
+
+def load_image_reads(path) -> dict[str, dict]:
+    """image_url -> the reading of that exact image (latest read wins)."""
+    out = {}
+    for r in read_csv(path):
+        u = (r.get("image_url") or "").split("?")[0]
+        if u and (u not in out or r.get("read_on", "") >= out[u].get("read_on", "")):
+            out[u] = r
+    return out
+
+
+def has_offer(i) -> bool:
+    return bool(i.get("months_free") or i.get("cash_off") or i.get("display"))
+
+
+def resolve_offer(inc, hist, lid, reads, as_of, stale_days, flag) -> dict:
+    """Text beats image (Neil, 2026-11-24: the text is usually more accurate and the banner often
+    outlives the offer). An image reading only applies to the exact image it was read from."""
+    latest = hist[-1]
+    hero = hero_of(latest)
+    rd = reads.get(hero)
+    if has_offer(inc):
+        if rd and (num(rd.get("months_free")) or 0, num(rd.get("cash_off")) or 0) != (inc.get("months_free") or 0, inc.get("cash_off") or 0):
+            flag("incentive", f"Text offer '{inc['display']}' used. The listing image (read {rd.get('read_on')}) says "
+                              f"'{rd.get('offer')}'. Text wins; confirm which is current", call=True)
+        return inc
+    before = [c for c in hist[:-1] if has_offer(incentive_from_capture(c))]
+    if rd:
+        if before and hero_of(before[-1]) == hero:
+            flag("incentive", f"Text offer gone since {before[-1]['ts'][:10]} but the unchanged banner still shows "
+                              f"'{rd.get('offer')}'. Likely a leftover banner: NOT applied, confirm by call", call=True)
+            return inc
+        try:
+            age = (as_of - date.fromisoformat(rd.get("read_on", "")[:10])).days
+        except ValueError:
+            age = 0
+        if age > stale_days:
+            flag("incentive", f"Image offer '{rd.get('offer')}' read {age} days ago (image unchanged since): confirm it still runs", call=True)
+        out = dict(inc, display=f"{rd.get('offer')} (listing image)", source="listing image",
+                   months_free=num(rd.get("months_free")), cash_off=num(rd.get("cash_off")),
+                   term=num(rd.get("lease_term")), vague=False, flagged_only=False)
+        if not out["term"] and (out["months_free"] or out["cash_off"]):
+            flag("incentive", "Image offer has no lease term: amortized over 12 months by default", call=True)
+        return out
+    old = sorted((r for u, r in reads.items() if str(r.get("listing_id")) == str(lid)), key=lambda r: r.get("read_on", ""))
+    if old:
+        flag("incentive", f"Hero image changed since '{old[-1].get('offer')}' was read on {old[-1].get('read_on')}: "
+                          f"NOT applied. Read the new image", call=True)
+    return inc
+
+
 def capture_suites(c) -> pd.DataFrame:
     """Suite rows for one capture via the ingest's own parser (hygiene flags included)."""
     tmp = {"captures": [c]}
@@ -343,7 +413,8 @@ def collapse(S: pd.DataFrame, notes: dict[int, str]) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------- building assembly
-def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, stale_days: int, image_files=()):
+def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, stale_days: int, image_files=(),
+             image_reads=None):
     buildings = read_csv(spec_dir / "buildings.csv")
     manual = read_csv(spec_dir / "manual_suites.csv")
     if not buildings:
@@ -353,6 +424,7 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
     mapsh = load_map_history(map_files, [i for i in ids if i])
     qlog = load_queue_status(queue_files)
     imgs = load_images(image_files)
+    reads = load_image_reads(image_reads) if image_reads else {}
     out, flags, calls = [], [], []
 
     for b, lid in zip(buildings, ids):
@@ -403,12 +475,14 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
                 flag("room share", "Listing reads as a room share: excluded from the survey")
                 continue
             S = capture_suites(latest)
-            inc = incentive_from_capture(latest)
+            inc = resolve_offer(incentive_from_capture(latest), hist, lid, reads, as_of, stale_days, flag)
             if b.get("incentive") or b.get("months_free") or b.get("cash_off"):
+                # Neil's last word for THIS survey (a phone call, a secret shop). Image readings
+                # belong in data/image_reads.csv instead, so they expire with the image.
                 inc = {"display": b.get("incentive", ""), "source": "entered by hand", "net_effective": False,
                        "months_free": num(b.get("months_free")), "cash_off": num(b.get("cash_off")),
                        "term": num(b.get("lease_term")), "vague": False, "flagged_only": False}
-                flag("incentive", f"Incentive entered by hand: '{inc['display']}' (overrides the listing text)")
+                flag("incentive", f"Incentive entered by hand: '{inc['display']}' (overrides listing text and image)")
             ptypes, psnip, prate = find_parking(desc)
             parking_txt = clean_parking(bf.get("parking_text")) or ptypes.replace("|", ", ")
             gone = qlog.get(lid, {}).get("status") == "gone" and qlog[lid].get("ts", "") > latest.get("ts", "")
@@ -452,7 +526,7 @@ def assemble(spec_dir: Path, detail_files, map_files, queue_files, as_of: date, 
                 flag("incentive", "Promo box present but no readable terms: check the listing (image-only offers happen)", call=True)
             elif inc["vague"]:
                 flag("incentive", f"Incentive without numeric terms ({inc['source']}): '{inc['display'][:90]}'", call=True)
-            elif (inc["months_free"] or inc["cash_off"]) and not inc["term"]:
+            elif (inc["months_free"] or inc["cash_off"]) and not inc["term"] and inc.get("source") != "listing image":
                 flag("incentive", "Incentive has no stated lease term: amortized over 12 months by default", call=True)
             # missing suite types
             got = {int(r["beds"]) for r in bld["rows"] if r.get("beds") is not None and not pd.isna(r.get("beds"))}
@@ -503,6 +577,9 @@ def change_log(bld) -> list[dict]:
             if s0[k] and s1[k] and s0[k] != s1[k]:
                 rows.append({"Building": bld["name"], "From": d0, "To": d1, "Source": "detail",
                              "Change": f"{k[0]} {k[1] or ''}sf ${s0[k]:,.0f} -> ${s1[k]:,.0f} ({(s1[k] - s0[k]) / s0[k]:+.1%})"})
+        if hero_of(c0) and hero_of(c1) and hero_of(c0) != hero_of(c1):
+            rows.append({"Building": bld["name"], "From": d0, "To": d1, "Source": "detail",
+                         "Change": "hero image changed (any offer read from the old image no longer applies)"})
         i0, i1 = incentive_from_capture(c0)["display"], incentive_from_capture(c1)["display"]
         if i0 != i1:
             rows.append({"Building": bld["name"], "From": d0, "To": d1, "Source": "detail",
@@ -729,7 +806,7 @@ def cmd_build(a):
     exp = lambda pats: sorted({f for p in (pats or []) for f in glob.glob(p)})  # noqa: E731
     as_of = date.fromisoformat(a.as_of) if a.as_of else date.today()
     blds, flags, calls = assemble(spec, exp(a.detail), exp(a.map), exp(a.queue_log), as_of,
-                                  int(settings.get("stale_days", 14)), exp(a.images))
+                                  int(settings.get("stale_days", 14)), exp(a.images), a.image_reads)
     write_workbook(blds, flags, calls, settings, a.out)
     recalculated = recalc(a.out)
     n = sum(len(b["rows"]) for b in blds)
@@ -764,6 +841,7 @@ def cmd_images(a):
     import base64
     exp = lambda pats: sorted({f for p in (pats or []) for f in glob.glob(p)})  # noqa: E731
     imgs = load_images(exp(a.images))
+    reads = load_image_reads(a.image_reads)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for r in read_csv(Path(a.spec) / "buildings.csv"):
@@ -777,7 +855,9 @@ def cmd_images(a):
             continue
         path = out / f"{lid}_{name}.jpg"
         path.write_bytes(base64.b64decode(im["jpeg_b64"]))
-        print(f"[images] {lid} {r.get('building_name', '')}: {path} ({im.get('w')}x{im.get('h')}, captured {im.get('ts', '')[:10]})")
+        rd = reads.get((im.get("url") or "").split("?")[0])
+        state = f"already read {rd.get('read_on')}: '{rd.get('offer')}'" if rd else "NEEDS READING (add a row to data/image_reads.csv)"
+        print(f"[images] {lid} {r.get('building_name', '')}: {path} ({im.get('w')}x{im.get('h')}, captured {im.get('ts', '')[:10]}) {state}")
 
 
 def main(argv=None):
@@ -792,12 +872,15 @@ def main(argv=None):
     b.add_argument("--map", nargs="*")
     b.add_argument("--queue-log", nargs="*")
     b.add_argument("--images", nargs="*", help="rf_images_*.json from userscript v2.0")
+    b.add_argument("--image-reads", default=str(Path(__file__).resolve().parent.parent / "data" / "image_reads.csv"),
+                   help="offers read from listing images, keyed by image URL (default data/image_reads.csv)")
     b.add_argument("--as-of")
     b.add_argument("--out", required=True)
     im = sub.add_parser("images", help="write comps' hero images to a folder for reading")
     im.add_argument("spec")
     im.add_argument("--images", nargs="*", required=True)
     im.add_argument("--out", required=True)
+    im.add_argument("--image-reads", default=str(Path(__file__).resolve().parent.parent / "data" / "image_reads.csv"))
     a = ap.parse_args(argv)
     {"queue": cmd_queue, "build": cmd_build, "images": cmd_images}[a.cmd](a)
 
