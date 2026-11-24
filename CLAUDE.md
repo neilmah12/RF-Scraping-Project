@@ -802,7 +802,7 @@ rf_data/
    annual rent rollup's n_unique_listings would overcount without a fix. Keeping
    full raw snapshot history (already the plan) is what makes this answerable
    later without having to re-capture anything.
-8. apartments.com (and similar non-map-first sites) explored 2026-08-04 as a
+8. (2026-11-24: discovery brief for a Claude in Chrome session written, `docs/BRIEF_apartments_com_discovery.md`; report pending.) apartments.com (and similar non-map-first sites) explored 2026-08-04 as a
    possible second bulk source: no single map.json-equivalent found via
    Fetch/XHR. Likely lives in paginated search results, inline page JSON
    (__NEXT_DATA__ / __INITIAL_STATE__-style embeds), or a GraphQL endpoint
