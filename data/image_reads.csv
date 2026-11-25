@@ -26,7 +26,7 @@ listing_id,image_url,read_on,offer,months_free,lease_term,cash_off,valid_until,r
 437077,https://rf-images-prod-bcdn.rentfaster.ca/437077/17147906.v.e1741ec100b86661f370be5e3b646ea7.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
 442656,https://rf-images-prod-bcdn.rentfaster.ca/442656/16586018.v.d5c7d2be2016e01ce4c1b4c663f8c0f3.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
 448914,https://rf-images-prod-bcdn.rentfaster.ca/448914/18599760.v.173c67b8de699c31d4f64e19a8a49226.jpg,2026-11-24,$500 off first month's rent,,,500,,Claude,"Banner, conditions apply"
-454900,https://rf-images-prod-bcdn.rentfaster.ca/454900/19602760.v.61d966d752c79d17601a82c983ed5e51.jpg,2026-11-24,"Black Friday special: one month free, sign a lease by Dec 1 2026",1,,,2026-12-01,Claude,"Banner also states heat and water included; promotional savings in advertised rents per fine print, select suites"
+454900,https://rf-images-prod-bcdn.rentfaster.ca/454900/19602760.v.61d966d752c79d17601a82c983ed5e51.jpg,2026-11-24,"Black Friday special: one month free, sign a lease by Dec 1 2026",1,,,2026-12-01,Claude,"Banner also states heat and water included; fine print: advertised rents include promotional savings, select suites"
 456767,https://rf-images-prod-bcdn.rentfaster.ca/456767/16910330.v.39ea71d99b14d7e00b69556bdc669af5.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
 460676,https://rf-images-prod-bcdn.rentfaster.ca/460676/16156980.v.4667a35c3b33326ff10624ba695a8b3b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
 460680,https://rf-images-prod-bcdn.rentfaster.ca/460680/15589143.v.b2094668f2aa894144c8b1b1e3601d8e.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
@@ -44,3 +44,59 @@ listing_id,image_url,read_on,offer,months_free,lease_term,cash_off,valid_until,r
 700348,https://rf-images-prod-bcdn.rentfaster.ca/700348/17996087.v.0353a510a691378da9e45cb46822698e.jpg,2026-11-24,One month free,1,,,,Claude,"Banner, restrictions apply"
 717171,https://rf-images-prod-bcdn.rentfaster.ca/717171/16479050.v.f2fa9fee8024768f5131606aa4aa01e4.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
 785834,https://rf-images-prod-bcdn.rentfaster.ca/785834/18781150.v.c50e1f93205bdd490cddbb892fdaae5b.jpg,2026-11-24,none,,,,,Claude,Photo of building or suite; no offer
+250647,https://rf-images-prod-bcdn.rentfaster.ca/250647/14691415.v.cf5908c425a923587e3883ffdd6da89d.jpg,2026-11-25,none,,,,,Claude,Plain photo
+259103,https://rf-images-prod-bcdn.rentfaster.ca/259103/14475412.v.055c4e04f3e711394b8fec59d1573096.jpg,2026-11-25,none,,,,,Claude,Plain photo
+264791,https://rf-images-prod-bcdn.rentfaster.ca/264791/14475911.v.f63b3cc030b00d3876d24ad5f17cf688.jpg,2026-11-25,none,,,,,Claude,Plain photo
+269381,https://rf-images-prod-bcdn.rentfaster.ca/269381/14479342.v.d8bf5fd5a47dea90160cfb53b7f1213a.jpg,2026-11-25,none,,,,,Claude,Plain photo
+274202,https://rf-images-prod-bcdn.rentfaster.ca/274202/15304518.v.f8db2148d1d0fd5a58b679dc27450c04.jpg,2026-11-25,none,,,,,Claude,Plain photo
+275037,https://rf-images-prod-bcdn.rentfaster.ca/275037/18250777.v.3efec213a49b7234a56d88c5978fa1bc.jpg,2026-11-25,none,,,,,Claude,Plain photo
+278945,https://rf-images-prod-bcdn.rentfaster.ca/278945/19132816.v.6e2605a2ef304f0084c68145cf185f53.jpg,2026-11-25,"Save up to $1,750 on rent, conditions apply",,,,,Claude,"""Up to"" amount, terms not stated: not valued, confirm by call"
+294278,https://rf-images-prod-bcdn.rentfaster.ca/294278/7708083.v.47f5cf0ccc5a374c20fb75f697c3e2c3.jpg,2026-11-25,none,,,,,Claude,Plain photo
+303424,https://rf-images-prod-bcdn.rentfaster.ca/303424/18394321.v.acd2f91bbea740ececb269f4e9d409c5.jpg,2026-11-25,none,,,,,Claude,Plain photo
+303664,https://rf-images-prod-bcdn.rentfaster.ca/303664/4143825.v.e3a1b7d631a9b899ab59ee4eafe3f82d.jpg,2026-11-25,none,,,,,Claude,Plain photo
+305121,https://rf-images-prod-bcdn.rentfaster.ca/305121/12868029.v.8dc63258205d8f8e57c8e323676b95a4.jpg,2026-11-25,none,,,,,Claude,Plain photo
+334147,https://rf-images-prod-bcdn.rentfaster.ca/334147/17577735.v.41e5091a595818a6c235472fbd16e23a.jpg,2026-11-25,Reduced security deposits starting at $499,,,,,Claude,"Deposit offer, select suites: not a rent incentive"
+334283,https://rf-images-prod-bcdn.rentfaster.ca/334283/19602757.v.3334eb03ef9691a646e6379b6f9f5c49.jpg,2026-11-25,"Black Friday special: $250 discount, sign a lease by Dec 1 2026",,,250,2026-12-01,Claude,"Fine print: advertised rents include promotional savings, select suites"
+358143,https://rf-images-prod-bcdn.rentfaster.ca/358143/19595347.v.c92fbc38a37bdc0366b6cca161807b83.jpg,2026-11-25,"Black Friday special: one month free, sign a lease by Dec 1 2026",1,,,2026-12-01,Claude,"Fine print: advertised rents include promotional savings, select suites"
+371395,https://rf-images-prod-bcdn.rentfaster.ca/371395/4896193.v.07df9c4cd823559e9b272d1e16a0a195.jpg,2026-11-25,none,,,,,Claude,Plain photo
+377425,https://rf-images-prod-bcdn.rentfaster.ca/377425/5011738.v.d0327676e0a9c71f6d734d008b9c6f5f.jpg,2026-11-25,none,,,,,Claude,Plain photo
+402270,https://rf-images-prod-bcdn.rentfaster.ca/402270/16244711.v.ac3f975d8f7c982a58fc8f8f79d2aa51.jpg,2026-11-25,none,,,,,Claude,Plain photo
+438264,https://rf-images-prod-bcdn.rentfaster.ca/438264/15269085.v.8aee09cd381f63a62a460e9abfd8ee76.jpg,2026-11-25,none,,,,,Claude,Plain photo
+439203,https://rf-images-prod-bcdn.rentfaster.ca/439203/11877006.v.b4575d280402da8159e49a6e7dddd9a1.jpg,2026-11-25,none,,,,,Claude,Plain photo
+458652,https://rf-images-prod-bcdn.rentfaster.ca/458652/7225510.v.5ffc7267deb6f353556498023385aa8a.jpg,2026-11-25,none,,,,,Claude,Plain photo
+460896,https://rf-images-prod-bcdn.rentfaster.ca/460896/7777788.v.2ac98c9255067b7c02f44a2b85bf81df.jpg,2026-11-25,none,,,,,Claude,Plain photo
+461234,https://rf-images-prod-bcdn.rentfaster.ca/461234/7284899.v.b9ec9731048c84daff3ebfa901a44d1d.jpg,2026-11-25,none,,,,,Claude,Plain photo
+461509,https://rf-images-prod-bcdn.rentfaster.ca/461509/19489334.v.71e4d8bc643b2ba2290303e87e51c8cc.jpg,2026-11-25,Rideau Tower: November free + December and January half rent on a 13-month lease,2,13,,,Claude,1 free + 2 half months = 2 months
+468295,https://rf-images-prod-bcdn.rentfaster.ca/468295/7465789.v.4e32464c5a839c382809c85018372d03.jpg,2026-11-25,none,,,,,Claude,Plain photo
+470341,https://rf-images-prod-bcdn.rentfaster.ca/470341/12754698.v.d6532c7155bb3f96d8e2ae0ee4abc49b.jpg,2026-11-25,none,,,,,Claude,Plain photo
+478564,https://rf-images-prod-bcdn.rentfaster.ca/478564/7690067.v.b55cf97bb0c547cb9c67f5056ccbc382.jpg,2026-11-25,none,,,,,Claude,Plain photo
+484726,https://rf-images-prod-bcdn.rentfaster.ca/484726/19423179.v.e17b48e64473e409fd9694d233a271f1.jpg,2026-11-25,November free + December free on a 12-month lease (now starting at $1095),2,12,,,Claude,"Parabelle banner, limited time, select suites"
+495803,https://rf-images-prod-bcdn.rentfaster.ca/495803/17924877.v.5ab2c7f3f5397236a7d599a9dc702810.jpg,2026-11-25,Ask about our exclusive incentives when you sign a lease today,,,,,Claude,"Vague, terms not stated: confirm by call"
+505838,https://rf-images-prod-bcdn.rentfaster.ca/505838/17954940.v.e7f81e50b537951a5c5e48c70364ae02.jpg,2026-11-25,Rental incentives available,,,,,Claude,"Vague, terms not stated: confirm by call"
+512609,https://rf-images-prod-bcdn.rentfaster.ca/512609/18900681.v.b44aef43d3f359c3cab480ae6461abc8.jpg,2026-11-25,none,,,,,Claude,"River Gate banner: heat and water included, suites from $1,300s; no offer"
+513394,https://rf-images-prod-bcdn.rentfaster.ca/513394/19410358.v.9999d75cedfaec8894c18c1318c2bb2b.jpg,2026-11-25,Millcreek Village: November free + December and January half rent,2,,,,Claude,1 free + 2 half months = 2 months; no lease term stated
+523499,https://rf-images-prod-bcdn.rentfaster.ca/523499/13106110.v.53bf315dc0ae3c80054de4fc15e810ae.jpg,2026-11-25,none,,,,,Claude,Plain photo
+530057,https://rf-images-prod-bcdn.rentfaster.ca/530057/10402219.v.78470495b0612ad4b008c9df1270aca2.jpg,2026-11-25,none,,,,,Claude,Plain photo
+531465,https://rf-images-prod-bcdn.rentfaster.ca/531465/8999188.v.70003ae09cc0e5064f1be18863fbe63b.jpg,2026-11-25,none,,,,,Claude,Plain photo
+536669,https://rf-images-prod-bcdn.rentfaster.ca/536669/17309980.v.e22604ed2dde0f279e18b181185a9ad5.jpg,2026-11-25,One month free rent on a 13-month lease,1,13,,,Claude,
+559561,https://rf-images-prod-bcdn.rentfaster.ca/559561/9913436.v.bb4451d9b900c38fb07c78d19e4e36f3.jpg,2026-11-25,none,,,,,Claude,Plain photo
+579578,https://rf-images-prod-bcdn.rentfaster.ca/579578/15757905.v.777418af13a10292d114fd1fe4bcaa57.jpg,2026-11-25,none,,,,,Claude,Plain photo
+593651,https://rf-images-prod-bcdn.rentfaster.ca/593651/19423182.v.6743753a848e876cc743f4f34e49edfd.jpg,2026-11-25,November free + December free on a 12-month lease (now starting at $1195),2,12,,,Claude,"Parabelle banner, limited time, select suites"
+605728,https://rf-images-prod-bcdn.rentfaster.ca/605728/12184324.v.afad77a602995b4edf3e79991705acc8.jpg,2026-11-25,none,,,,,Claude,Plain photo
+616838,https://rf-images-prod-bcdn.rentfaster.ca/616838/12703921.v.b8b3e4c2deb1a8be11fe168af2b5cc35.jpg,2026-11-25,none,,,,,Claude,Plain photo
+627870,https://rf-images-prod-bcdn.rentfaster.ca/627870/13139211.v.0c2acfdf94a925e9dee7b7d6ab3bbe7b.jpg,2026-11-25,none,,,,,Claude,Plain photo
+628346,https://rf-images-prod-bcdn.rentfaster.ca/628346/13147359.v.92f70be3b3d06744bfec66e23a387cda.jpg,2026-11-25,none,,,,,Claude,Plain photo
+629192,https://rf-images-prod-bcdn.rentfaster.ca/629192/17810689.v.2c4eaaf59949715222fe9f6d224c4b67.jpg,2026-11-25,One month free,1,,,,Claude,"East St. Albert banner, no term stated"
+634118,https://rf-images-prod-bcdn.rentfaster.ca/634118/15607962.v.9b305414fa1feb6ce88847ba24da210b.jpg,2026-11-25,none,,,,,Claude,"Edison 50 ""Rent now"" banner; no offer"
+709438,https://rf-images-prod-bcdn.rentfaster.ca/709438/16187372.v.a5d4e19a0c003ef840ad1fe5d8fb8d17.jpg,2026-11-25,none,,,,,Claude,Plain photo
+713193,https://rf-images-prod-bcdn.rentfaster.ca/713193/16297300.v.924d5d37ce2ef2b3b41c6743602f5883.jpg,2026-11-25,none,,,,,Claude,Plain photo
+724749,https://rf-images-prod-bcdn.rentfaster.ca/724749/16650632.v.dd8485ebd69da088a7ef3cc70ef2e21b.jpg,2026-11-25,none,,,,,Claude,Plain photo
+747713,https://rf-images-prod-bcdn.rentfaster.ca/747713/18565633.v.afb90eb6acb66e5b28d86f81eb823e5a.jpg,2026-11-25,none,,,,,Claude,Edison West amenities banner; no offer
+758927,https://rf-images-prod-bcdn.rentfaster.ca/758927/17788931.v.4ff5f19ff772c1a73f5255b4753df6a9.jpg,2026-11-25,none,,,,,Claude,Plain photo
+763406,https://rf-images-prod-bcdn.rentfaster.ca/763406/18027531.v.5202e2ddd53741ab861d8a245c1aef47.jpg,2026-11-25,One month free,1,,,,Claude,"Wingspan banner, no term stated"
+765914,https://rf-images-prod-bcdn.rentfaster.ca/765914/17955582.v.ab8ae323e98b19f2804a849be09011b0.jpg,2026-11-25,none,,,,,Claude,Plain photo
+777245,https://rf-images-prod-bcdn.rentfaster.ca/777245/18440895.v.bbde674f4d9379e987bd0b94a44ba9f1.jpg,2026-11-25,"BLIS: get 1 month free rent, select suites",1,,,,Claude,
+780899,https://rf-images-prod-bcdn.rentfaster.ca/780899/19117383.v.f24f21b1ff7bce91eac12d2fc8ffcdce.jpg,2026-11-25,"Pinnacle: get 2 months free rent, select suites",2,,,,Claude,
+785142,https://rf-images-prod-bcdn.rentfaster.ca/785142/18755314.v.064132e0e5d427b777bb2dfd677e9055.jpg,2026-11-25,none,,,,,Claude,Plain photo
+785202,https://rf-images-prod-bcdn.rentfaster.ca/785202/19406417.v.4cadcf1350bce44eee7f790e65bbf1c2.jpg,2026-11-25,none,,,,,Claude,Now leasing flyer with rents; no offer
+786259,https://rf-images-prod-bcdn.rentfaster.ca/786259/18799931.v.a29ca788b5bc5edc6c6acf6f39eba5b5.jpg,2026-11-25,none,,,,,Claude,Plain photo

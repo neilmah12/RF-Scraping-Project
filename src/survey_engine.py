@@ -74,7 +74,8 @@ NAVY, WHITE, BAND, YELLOW, PINK = "FF002060", "FFFFFFFF", "FFEDEDED", "FFFFFF00"
 SAFE_PREFIX = "https://www.rentfaster.ca/properties/"
 ID_RE = re.compile(r"(\d{5,7})(?:[/?#]|$)")
 NET_EFFECTIVE_RE = re.compile(r"net[- ]effective|already (?:includes?|reflects?)[^.]{0,40}incentive|"
-                              r"incentive[^.]{0,30}already (?:included|applied|reflected)", re.I)
+                              r"incentive[^.]{0,30}already (?:included|applied|reflected)|"
+                              r"advertised (?:rents?|prices?) (?:include|reflect)s?[^.]{0,20}(?:promotional|savings|incentive)", re.I)
 ROOM_SHARE_RE = re.compile(r"room ?share|roommate|shared (?:house|home|accommodation)|room for rent", re.I)
 TERM_RE = re.compile(r"(\d{1,2})[- ]?(?:month|mo)s?\.?[- ]lease|lease (?:length|term)\s*:?\s*(\d{1,2})|"
                      r"on (?:a |an )?(\d{1,2})[- ]?(?:month|mo)", re.I)
@@ -344,7 +345,14 @@ def resolve_offer(inc, hist, lid, reads, as_of, stale_days, flag) -> dict:
         out = dict(inc, display=f"{rd.get('offer')} (listing image)", source="listing image",
                    months_free=num(rd.get("months_free")), cash_off=num(rd.get("cash_off")),
                    term=num(rd.get("lease_term")), vague=False, flagged_only=False)
-        if not out["term"] and (out["months_free"] or out["cash_off"]):
+        if NET_EFFECTIVE_RE.search(" ".join([rd.get("offer") or "", rd.get("notes") or ""])):
+            out["net_effective"] = True
+            flag("incentive", f"Image says advertised rents already include the offer: listed rent used as net, "
+                              f"no deduction. Confirm by call", call=True)
+        elif not (out["months_free"] or out["cash_off"]):
+            out["vague"] = True
+            flag("incentive", f"Image offer '{rd.get('offer')}' states no valued terms: not deducted, confirm by call", call=True)
+        elif not out["term"]:
             flag("incentive", "Image offer has no lease term: amortized over 12 months by default", call=True)
         return out
     old = sorted((r for u, r in reads.items() if str(r.get("listing_id")) == str(lid)), key=lambda r: r.get("read_on", ""))
