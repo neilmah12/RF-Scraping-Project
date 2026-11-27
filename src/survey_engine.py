@@ -215,6 +215,13 @@ MONTHS_FALLBACK_RE = re.compile(r"\b(\d|one|two|three|four|last|first|a)\s+month
                                 r"|free\s+(\d|one|two|three|four)\s+months?", re.I)
 CHROME_RE = re.compile(r"^.*(?:Units Unavailable|Contact Landlord|Add to My Faves|Street View)\s*", re.I)
 HALF_RE = re.compile(r"\b(half|1/2|0?\.5)\s*(?:a\s*)?months?\b[^.!\n]{0,20}free", re.I)
+# Free perks are recorded, never valued (Neil: parking 2026-11-25, utilities 2026-11-27). Their
+# "N months free <perk>" wording is cut out before the rent terms are read, so "6 months free
+# parking" does not become 6 months of free rent.
+_PERK = r"(?:parking|stalls?|utilit\w*|internet|wi-?fi|cable|storage|heat|hydro|power|electricity|water)"
+_N = r"(?:\d{1,2}|one|two|three|four|five|six|twelve|a|half)"
+PERK_RE = re.compile(rf"\b{_N}\s*months?\s+(?:of\s+)?(?:free\s+)?(?:\w+\s+)?{_PERK}\b(?:\s+(?:and|&|\+)\s+{_PERK}\b)*(?:\s+(?:for\s+)?free)?"
+                     rf"|\bfree\s+{_PERK}\b(?:\s+(?:and|&|\+)\s+{_PERK}\b)*(?:\s+for)?(?:\s+(?:the\s+)?(?:first\s+)?{_N}\s*months?)?", re.I)
 
 
 def incentive_sentence(text) -> str:
@@ -252,14 +259,15 @@ def incentive_from_capture(c) -> dict:
         if sent:
             source = src
             break
-    terms = rdi.parse_promo_terms(sent) if sent else {}
+    val = PERK_RE.sub(" ", sent)   # perks stay in the display text but are never valued
+    terms = rdi.parse_promo_terms(val) if val.strip() else {}
     months, dollars = terms.get("months_free"), terms.get("promo_dollars")
-    pm = PCT_FIRST_RE.search(sent)
+    pm = PCT_FIRST_RE.search(val)
     if pm and not months:
         months = int(pm.group(1) or pm.group(2)) / 100
-    if HALF_RE.search(sent) and not months:
+    if HALF_RE.search(val) and not months:
         months = 0.5
-    fb = MONTHS_FALLBACK_RE.search(sent)
+    fb = MONTHS_FALLBACK_RE.search(val)
     if fb and not months:
         w = (fb.group(1) or fb.group(2)).lower()
         months = float(WORDNUM.get(w, w))
