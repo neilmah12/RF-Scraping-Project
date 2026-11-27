@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rentfaster detail capture
 // @namespace    rf-scraping-project
-// @version      2.0
+// @version      2.1
 // @description  Keeps the schema.org listing data your browser already loaded while you browse Rentfaster listings. Optional queue mode (off until you load a queue and press Start) opens the next listing in this tab on a paced timer.
 // @match        https://www.rentfaster.ca/properties/*
 // @match        https://rentfaster.ca/properties/*
@@ -31,6 +31,17 @@
  * Queue mode (v1.5, opt-in): after you load a queue CSV and press Start, it
  * opens the listed pages in this tab one at a time on a paced timer. See the
  * QUEUE MODE section below for pacing, caps and the conditions that stop it.
+ *
+ * v2.1 (2026-11-27): captures are stored in IndexedDB instead of localStorage. On 2026-11-25 the
+ * cumulative store reached 246 captures (about 5.3M characters), past Chrome's roughly 5.2M-character
+ * localStorage limit, so a page with good data (777245) could not be saved and the queue stopped on
+ * "storage full". IndexedDB holds hundreds of MB, so that stop should not recur. Anything already in
+ * localStorage moves across on the first page load and the old key is removed once the copy is
+ * written. If IndexedDB cannot be opened (some private windows) the script falls back to localStorage
+ * as before. Each page's write finishes before the queue opens the next page. The badge download reads
+ * the whole store, so captures from other tabs are included. A challenge row in the queue log now
+ * carries a note: which check fired, the page title and the HTTP status. After a challenge, Start asks
+ * before resuming within 12 hours (recommended: stop for the day).
  *
  * v2.0 (2026-11-24): keeps a downscaled copy of each listing's HERO IMAGE, because some landlords
  * put their offer only in the photo (The Towns at Shawnee Park: "1 Month Free Rent!" exists in no
@@ -135,29 +146,105 @@
 (function () {
   'use strict';
 
-  var STORE = '__rfDetailCaptures';
-  var MAX = 2000;
+  var STORE = '__rfDetailCaptures';   // localStorage key used before v2.1 (and the fallback)
+  var MAX = 5000;
 
-  function load() {
+  // --- capture store (v2.1: IndexedDB) ----------------------------------------
+  // CACHE is this tab's copy of the store, loaded once when the page opens, so the rest of the
+  // script can stay synchronous. save() updates CACHE at once and queues the IndexedDB write;
+  // PENDING resolves true/false when the writes so far have finished. Only records this tab
+  // added, changed or removed are written, so a second tab's captures are never deleted here.
+  var CACHE = [], KNOWN = {}, USE_LS = false, PENDING = Promise.resolve(true), capDbP = null;
+  function capDb() {
+    if (!capDbP) capDbP = new Promise(function (res, rej) {
+      var r = indexedDB.open('rfd_captures', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('captures', { keyPath: '_k' }); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    return capDbP;
+  }
+  function newKey(c) { return c.listing_id + '|' + c.ts + '|' + Math.random().toString(36).slice(2, 8); }
+  function capTx(mode, fn) {
+    return capDb().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('captures', mode), st = tx.objectStore('captures'), out = fn(st);
+        tx.oncomplete = function () { res(out && 'result' in out ? out.result : undefined); };
+        tx.onerror = function () { rej(tx.error); };
+        tx.onabort = function () { rej(tx.error || new Error('transaction aborted')); };
+      });
+    });
+  }
+  function lsLoad() {
     try { return JSON.parse(localStorage.getItem(STORE) || '[]'); }
     catch (e) { return []; }
   }
-  // Captures run ~14KB each, so a 5-10MB localStorage quota fills somewhere
-  // around 350-750 listings. Before v1.4 a quota failure was swallowed: the
-  // write threw, capture() ignored the result, and the badge kept counting as
-  // if nothing was wrong -- so a long browsing session would silently stop
-  // persisting. Failure is now sticky and shown.
+  function storeFailed(e) {
+    window.__rfdStorageFull = true;
+    console.warn('[rf-detail] STORAGE WRITE FAILED (' + (e && (e.name || e.message)) + ') -- click the badge to download, '
+                 + 'then shift-click to clear. Nothing new is being saved until you do.');
+    return false;
+  }
+  // Load the store, moving any pre-v2.1 localStorage captures into IndexedDB first.
+  function storeInit() {
+    return capDb().then(function () {
+      var legacy = lsLoad();
+      if (!legacy.length) return null;
+      return capTx('readwrite', function (st) {
+        legacy.forEach(function (c) { if (!c._k) c._k = newKey(c); st.put(c); });
+      }).then(function () {
+        localStorage.removeItem(STORE);
+        console.log('[rf-detail] moved ' + legacy.length + ' captures from localStorage to IndexedDB');
+      });
+    }).then(function () {
+      return capTx('readonly', function (st) { return st.getAll(); });
+    }).then(function (all) {
+      CACHE = (all || []).sort(function (a, b) { return a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0; });
+      KNOWN = {}; CACHE.forEach(function (c) { KNOWN[c._k] = 1; });
+    }).catch(function (e) {
+      USE_LS = true; CACHE = lsLoad();
+      console.warn('[rf-detail] IndexedDB unavailable (' + (e && e.message) + '): using localStorage, about 240 listings fit');
+    });
+  }
+  function load() { return CACHE.slice(); }
   function save(list) {
-    try {
-      localStorage.setItem(STORE, JSON.stringify(list));
-      window.__rfdStorageFull = false;
-      return true;
-    } catch (e) {
-      window.__rfdStorageFull = true;
-      console.warn('[rf-detail] STORAGE FULL -- click the badge to download, then shift-click to clear. '
-                   + 'Nothing new is being saved until you do.');
-      return false;
+    if (USE_LS) {
+      try {
+        localStorage.setItem(STORE, JSON.stringify(list));
+        CACHE = list; window.__rfdStorageFull = false; return true;
+      } catch (e) { return storeFailed(e); }
     }
+    var keep = {};
+    list.forEach(function (c) { if (!c._k) c._k = newKey(c); keep[c._k] = 1; });
+    var del = CACHE.filter(function (c) { return !keep[c._k]; }).map(function (c) { return c._k; });
+    var put = list.filter(function (c) { return !KNOWN[c._k] || c._dirty; });
+    CACHE = list;
+    if (!put.length && !del.length) return true;
+    PENDING = PENDING.then(function () {
+      return capTx('readwrite', function (st) {
+        put.forEach(function (c) { var r = Object.assign({}, c); delete r._dirty; st.put(r); });
+        del.forEach(function (k) { st.delete(k); });
+      }).then(function () {
+        put.forEach(function (c) { KNOWN[c._k] = 1; delete c._dirty; });
+        del.forEach(function (k) { delete KNOWN[k]; });
+        window.__rfdStorageFull = false;
+        return true;
+      }).catch(storeFailed);
+    });
+    return true;
+  }
+  // Everything in the store, from every tab (the download reads this, not CACHE).
+  function allCaptures() {
+    if (USE_LS) return Promise.resolve(lsLoad());
+    return PENDING.then(function () { return capTx('readonly', function (st) { return st.getAll(); }); })
+      .then(function (all) { return (all || []).sort(function (a, b) { return a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0; }); })
+      .catch(function () { return CACHE.slice(); });
+  }
+  function clearCaptures() {
+    localStorage.removeItem(STORE);
+    CACHE = []; KNOWN = {};
+    if (USE_LS) return Promise.resolve();
+    return PENDING.then(function () { return capTx('readwrite', function (st) { st.clear(); }); });
   }
 
   function listingId() {
@@ -633,7 +720,7 @@
       if (errs) rec2.capture_errors = errs;
       list.push(rec2);
     }
-    if (!save(list)) return 0; // quota hit: do not report a capture that was not stored
+    if (!save(list)) return 0; // write refused: do not report a capture that was not stored
     return payloads.length || 1;
   }
 
@@ -653,15 +740,17 @@
   }
 
   function download() {
-    var list = load();
-    if (list.length) {
-      saveFile(JSON.stringify({ kind: 'rentfaster_detail', captured_at: new Date().toISOString(), captures: list }),
-               'rf_detail_' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-    }
-    // Images go in their own files so the capture JSON stays small (v2.0).
-    downloadImages().then(function (n) {
-      if (!list.length && !n) alert('Nothing captured yet.');
-      refreshBadgeImages();
+    allCaptures().then(function (all) {
+      var list = all.map(function (c) { var r = Object.assign({}, c); delete r._k; delete r._dirty; return r; });
+      if (list.length) {
+        saveFile(JSON.stringify({ kind: 'rentfaster_detail', captured_at: new Date().toISOString(), captures: list }),
+                 'rf_detail_' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
+      }
+      // Images go in their own files so the capture JSON stays small (v2.0).
+      return downloadImages().then(function (n) {
+        if (!list.length && !n) alert('Nothing captured yet.');
+        refreshBadgeImages();
+      });
     });
   }
   function refreshBadgeImages() {
@@ -691,14 +780,13 @@
       ? '⚠ STORAGE FULL - download now (' + s.listings + ' held) ⬇'
       : s.listings + ' listings · ' + s.suites + ' suites · ' + s.withPromo + ' promos ⬇';
     // Nudge to download well before the quota bites.
-    if (!full && s.listings >= 250 && s.listings % 50 === 0) {
+    if (!full && s.listings >= 150 && s.listings % 50 === 0) {
       el.textContent = '↓ ' + el.textContent + '  (worth downloading)';
     }
     el.addEventListener('click', function (e) {
       if (e.shiftKey) {
         if (confirm('Clear all captured listings?')) {
-          localStorage.removeItem(STORE);
-          el.textContent = 'cleared';
+          clearCaptures().then(function () { el.textContent = 'cleared'; window.__rfdStorageFull = false; });
         }
         return;
       }
@@ -826,13 +914,21 @@
     return i;
   }
 
-  function looksLikeChallenge() {
-    var t = (document.title || '').toLowerCase();
-    if (/just a moment|attention required|verify you are human|are you a robot|captcha|access denied|forbidden|too many requests|rate limit/.test(t)) return true;
-    if (document.querySelector('iframe[src*="captcha"],iframe[src*="challenge"],.cf-turnstile,#challenge-form,#challenge-running,.g-recaptcha,.h-captcha')) return true;
+  // Returns WHICH check fired ('' when none), so a challenge row in the log explains itself.
+  function challengeSignal() {
+    var t = (document.title || '').toLowerCase(), m;
+    m = t.match(/just a moment|attention required|verify you are human|are you a robot|captcha|access denied|forbidden|too many requests|rate limit/);
+    if (m) return 'title "' + m[0] + '"';
+    var el = document.querySelector('iframe[src*="captcha"],iframe[src*="challenge"],.cf-turnstile,#challenge-form,#challenge-running,.g-recaptcha,.h-captcha');
+    if (el) return 'element ' + (el.id ? '#' + el.id : el.className ? '.' + String(el.className).split(' ')[0] : el.tagName.toLowerCase() + '[src~=' + ((el.getAttribute('src') || '').match(/captcha|challenge/) || [''])[0] + ']');
     var b = ((document.body && document.body.innerText) || '').slice(0, 600).toLowerCase();
-    return /verify you are human|unusual traffic|are you a robot|access denied|too many requests/.test(b);
+    m = b.match(/verify you are human|unusual traffic|are you a robot|access denied|too many requests/);
+    if (m) return 'page text "' + m[0] + '"';
+    var code = httpStatus();
+    if (code === 403 || code === 429) return 'HTTP ' + code;
+    return '';
   }
+  function looksLikeChallenge() { return !!challengeSignal(); }
   function httpStatus() {
     try { var n = performance.getEntriesByType('navigation')[0]; return n && n.responseStatus ? n.responseStatus : 0; } catch (e) { return 0; }
   }
@@ -892,11 +988,17 @@
         qLog({ listing_id: target.id, status: 'bad_url', priority: target.priority, url: target.url });
         cur.pos++; qSave(cur); armNavigation(cur, q); return;
       }
-      // Remember what we are navigating to, so the next page load can tell a
-      // redirect (gone / sibling listing) from you wandering off the queue.
-      cur.navigatingTo = target.id;
-      qSave(cur);
-      location.href = target.url;
+      // Do not leave the page until this page's capture is written.
+      PENDING.then(function (ok) {
+        var now = qState();
+        if (!now.running) return;
+        if (ok === false || window.__rfdStorageFull) { qStop('storage write failed - download captures, then shift-click the badge to clear', now); return; }
+        // Remember what we are navigating to, so the next page load can tell a
+        // redirect (gone / sibling listing) from you wandering off the queue.
+        now.navigatingTo = target.id;
+        qSave(now);
+        location.href = target.url;
+      });
     }, Math.max(0, st.nextAt - Date.now()));
     renderPanel();
   }
@@ -906,7 +1008,7 @@
   function annotateRedirect(newId, fromId) {
     var list = load(), changed = false;
     list.forEach(function (c) {
-      if (c.listing_id === newId && !c.redirected_from) { c.redirected_from = fromId; changed = true; }
+      if (c.listing_id === newId && !c.redirected_from) { c.redirected_from = fromId; c._dirty = true; changed = true; }
     });
     if (changed) save(list);
   }
@@ -941,8 +1043,12 @@
     var expected = q[st.pos];
 
     if (!expected) { qStop('queue finished', st); return; }
-    if (looksLikeChallenge() || [403, 429].indexOf(httpStatus()) !== -1) {
-      qLog({ listing_id: id, landed_id: id, status: 'challenge', priority: expected.priority, url: location.href });
+    var sig = challengeSignal();
+    if (sig) {
+      qLog({ listing_id: id || expected.id, landed_id: id, status: 'challenge', priority: expected.priority, url: location.href,
+             note: 'signal=' + sig + '; title=' + (document.title || '').slice(0, 60) + '; http=' + (httpStatus() || '?')
+                   + '; bodyChars=' + ((document.body && document.body.innerText) || '').length });
+      st.lastChallengeAt = Date.now();
       qStop('challenge or block page detected - queue stopped, nothing was bypassed', st);
       return;
     }
@@ -995,7 +1101,10 @@
       else if (window.__rfdRetried) note = 'captured on retry';
     } else if (looksGone()) status = 'gone';
     else { status = 'no_data'; note = diagnoseNoData(); }
-    finishItem(st, q, expected, status, id, note);
+    PENDING.then(function (ok) {
+      if (ok === false && (status === 'captured' || status === 'captured_dom')) { status = 'store_failed'; note = 'capture read but the write to storage failed'; }
+      finishItem(qState(), q, expected, status, id, note);
+    });
   }
 
   function loadQueueFile() {
@@ -1040,6 +1149,10 @@
     var st = qState();
     var left = Math.max(0, CFG.dailyCap - st.ranToday);
     if (!left) { alert('Daily cap of ' + CFG.dailyCap + ' pages already used today.'); return; }
+    if (st.lastChallengeAt && Date.now() - st.lastChallengeAt < 12 * 3600 * 1000) {
+      var ago = Math.round((Date.now() - st.lastChallengeAt) / 60000);
+      if (!confirm('The queue stopped on a challenge ' + ago + ' minutes ago. Recommended: stop for the day. Start anyway?')) return;
+    }
     var ans = prompt('How many pages this session? (daily cap remaining: ' + left + ', queue left: ' + Math.max(0, q.length - st.pos) + ')', String(Math.min(left, 60)));
     if (ans === null) return;
     var n = parseInt(ans, 10);
@@ -1125,6 +1238,7 @@
   }
 
   var onListingPage = /\/properties\//.test(location.pathname);
+  storeInit().then(function () {
   if (onListingPage) {
     var added = capture();
     badge();
@@ -1144,4 +1258,5 @@
     // badge here, only the queue's own handling.
     queueInit();
   }
+  });
 })();
